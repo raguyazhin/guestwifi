@@ -315,7 +315,17 @@ function gw_set_cookie($name, $value, $lifetimeSeconds)
     }
     $expires = $lifetimeSeconds > 0 ? time() + $lifetimeSeconds : 0;
     $secure  = !empty($_SERVER['HTTPS']);
-    gw_setcookie($name, $value, $expires, gw_base_path(), $secure, true, 'Lax');
+    gw_setcookie($name, $value, $expires, gw_base_path(), $secure, true, gw_samesite());
+}
+
+/**
+ * The firewall-hosted page calls this server cross-site, and browsers only
+ * send SameSite=None cookies on such calls - which in turn requires HTTPS.
+ * Over plain HTTP stay on Lax (None without Secure is rejected outright).
+ */
+function gw_samesite()
+{
+    return !empty($_SERVER['HTTPS']) ? 'None' : 'Lax';
 }
 
 function gw_storage_path($file = '')
@@ -520,14 +530,15 @@ function gw_portal_start()
 
     $path   = gw_base_path();
     $secure = !empty($_SERVER['HTTPS']);
+    $same   = gw_samesite();
 
     if (PHP_VERSION_ID >= 70300) {
         session_set_cookie_params(array(
             'lifetime' => 0, 'path' => $path, 'secure' => $secure,
-            'httponly' => true, 'samesite' => 'Lax',
+            'httponly' => true, 'samesite' => $same,
         ));
     } else {
-        session_set_cookie_params(0, $path . '; samesite=Lax', '', $secure, true);
+        session_set_cookie_params(0, $path . '; samesite=' . $same, '', $secure, true);
     }
 
     session_name('gw_portal');
@@ -955,7 +966,11 @@ function gw_send_sms($mobile, $message, $secret = '')
     try {
         switch ($driver) {
             case 'log':
-                $result = gw_sms_driver_log($mobile, $message);
+                // The template may not carry {otp} yet (awaiting DLT approval),
+                // so always record the code - this driver is for testing only.
+                $logged = ($secret !== '' && strpos($message, $secret) === false)
+                    ? $message . ' [OTP: ' . $secret . ']' : $message;
+                $result = gw_sms_driver_log($mobile, $logged);
                 break;
             case 'http':
                 $result = gw_sms_driver_http($mobile, $message);
@@ -1012,6 +1027,7 @@ function gw_sms_driver_http($mobile, $message)
 
     $replacements = array(
         '{mobile}'   => gw_msisdn($mobile),
+        '{local}'    => $mobile,              // 10 digits, no country code
         '{message}'  => $message,
         '{sender}'   => SMS_SENDER_ID,
         '{username}' => SMS_USERNAME,
@@ -1028,6 +1044,9 @@ function gw_sms_driver_http($mobile, $message)
     $opts   = array(
         CURLOPT_SSL_VERIFYPEER => (bool) $verify,
         CURLOPT_SSL_VERIFYHOST => $verify ? 2 : 0,
+        // The site DNS is sometimes slow to resolve the gateway; give it room.
+        CURLOPT_CONNECTTIMEOUT => 25,
+        CURLOPT_TIMEOUT        => 40,
     );
 
     if ($method === 'POST') {
@@ -1038,6 +1057,12 @@ function gw_sms_driver_http($mobile, $message)
     }
 
     $result = gw_http_request($url, $opts);
+
+    // A lookup/connect failure means the request never reached the gateway,
+    // so one retry cannot produce a duplicate SMS.
+    if (!$result['ok'] && preg_match('/^(Resolving timed out|Could not resolve|Connection timed out|Failed to connect)/i', $result['error'])) {
+        $result = gw_http_request($url, $opts);
+    }
 
     // Some gateways answer HTTP 200 with a body that means "rejected".
     $markers = gw_config_json('SMS_SUCCESS_MARKERS');
@@ -1100,6 +1125,12 @@ function gw_sms_driver_twilio($mobile, $message)
 
 function gw_http_request($url, $options = array())
 {
+    // Old XAMPP PHP builds ship without a CA bundle, so verification fails
+    // with "unable to get local issuer certificate" unless one is supplied.
+    if (defined('CA_BUNDLE_FILE') && CA_BUNDLE_FILE !== '' && is_file(CA_BUNDLE_FILE)) {
+        $options += array(CURLOPT_CAINFO => CA_BUNDLE_FILE);
+    }
+
     $ch = curl_init($url);
     curl_setopt_array($ch, $options + array(
         CURLOPT_RETURNTRANSFER => true,
@@ -1186,7 +1217,8 @@ function gw_otp_issue($mobile, $deviceId, $mac)
         }
     }
 
-    $stmt = $pdo->prepare('SELECT COUNT(*) FROM otp_requests WHERE mobile = ? AND created_at >= ?');
+    // Sends that never left (gateway down) do not use up the guest's quota.
+    $stmt = $pdo->prepare("SELECT COUNT(*) FROM otp_requests WHERE mobile = ? AND created_at >= ? AND status <> 'send_failed'");
     $stmt->execute(array($mobile, gw_today()));
     if ((int) $stmt->fetchColumn() >= MAX_OTP_PER_DAY) {
         gw_history_add($mobile, $deviceId, false, 'otp_daily_limit');

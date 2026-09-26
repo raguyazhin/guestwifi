@@ -1,4 +1,5 @@
 <!DOCTYPE html>
+<!-- Guest Wi-Fi portal page v1.4 (2026-09-26). Bump the version in the footer too. -->
 <html lang="en">
 <head>
 <meta charset="utf-8">
@@ -34,12 +35,12 @@
     /* >>> EDIT THIS: full URL of api.php on the XAMPP server. Use the IP
            address, not a hostname - DNS is usually blocked before a guest
            signs in. Only used when this page runs on the firewall. */
-    window.GW_PORTAL_SERVER = 'http://192.168.0.101/guestwifi/api.php';
+    window.GW_PORTAL_SERVER = 'https://172.20.10.56/guestwifi/api.php';
 
     /* Served from the guestwifi folder means XAMPP is hosting us, so the
        API sits right next to this file. Anywhere else means the firewall
        is serving the page and the API is across the network. */
-    window.GW_API_BASE = /\/guestwifi\//.test(location.pathname)
+    window.GW_API_BASE = location.pathname.indexOf('/guestwifi/') !== -1
         ? 'api.php'
         : window.GW_PORTAL_SERVER;
 </script>
@@ -139,14 +140,27 @@ font-size:.88rem;border-bottom:1px solid var(--border)}
 
         <div class="card-body">
 
-            <noscript>
-                <div class="alert alert-error">
-                    JavaScript is required to sign in to the guest network.
-                    Please enable it and reload this page.
-                </div>
-            </noscript>
+            <div id="nojs" class="alert alert-error">
+                JavaScript is required to sign in to the guest network.
+                Please enable it and reload this page.
+            </div>
 
             <div id="alert" class="alert" role="status"></div>
+            <script>
+            // Kept apart from the main script so it still runs if that one is
+            // cut short or fails - the error then shows instead of a blank page.
+            (function () {
+                var nj = document.getElementById('nojs');
+                if (nj) { nj.parentNode.removeChild(nj); }
+                window.onerror = function (msg, src, line) {
+                    var a = document.getElementById('alert');
+                    if (a) {
+                        a.className = 'alert alert-error';
+                        a.textContent = 'Page error: ' + msg + ' (line ' + line + ')';
+                    }
+                };
+            })();
+            </script>
 
             <!-- Step 1: terms ----------------------------------------- -->
             <section id="step-terms" class="step is-active">
@@ -256,13 +270,14 @@ font-size:.88rem;border-bottom:1px solid var(--border)}
 
         <footer class="card-footer">
             Powered by Sankara Nethralaya &middot; Chennai<br>
-            Need help? Contact the reception desk.
+            Need help? Contact the reception desk.<br>
+            <span id="page-ver">Page v1.4 &middot; 2026-09-26</span>
         </footer>
     </section>
 </main>
 
 <!--
-  The FortiGate fills in %%FORTIGATE%%, %%MAGIC%% and %%PROTURI%% when it
+  The FortiGate fills in its FORTIGATE, MAGIC and PROTURI tags when it
   serves this page, and expects a login form shaped like this. The script
   fills username/password in only after the OTP has been verified, then
   submits it - that post is what actually opens the firewall session.
@@ -282,6 +297,31 @@ font-size:.88rem;border-bottom:1px solid var(--border)}
 
     var API = window.GW_API_BASE || 'api.php';
     var el = function (id) { return document.getElementById(id); };
+
+    /* No regex literals or backslashes anywhere in this page: FortiOS
+       rewrites the file when it serves it as a replacement message, and a
+       mangled regex kills the whole script. Plain string helpers instead. */
+    function digits(s) {
+        s = String(s || '');
+        var out = '';
+        for (var i = 0; i < s.length; i++) {
+            var c = s.charAt(i);
+            if (c >= '0' && c <= '9') { out += c; }
+        }
+        return out;
+    }
+
+    function isHex32(s) {
+        if (typeof s !== 'string' || s.length !== 32) { return false; }
+        for (var i = 0; i < s.length; i++) {
+            if ('0123456789abcdef'.indexOf(s.charAt(i)) === -1) { return false; }
+        }
+        return true;
+    }
+
+    function isMobile(s) {
+        return s.length === 10 && digits(s) === s && '6789'.indexOf(s.charAt(0)) !== -1;
+    }
 
     var ui = {
         alert: el('alert'), ssidLine: el('ssid-line'),
@@ -308,7 +348,7 @@ font-size:.88rem;border-bottom:1px solid var(--border)}
     function deviceId() {
         var key = 'gw_device_id', id;
         try { id = localStorage.getItem(key); } catch (e) { id = null; }
-        if (!id || !/^[a-f0-9]{32}$/.test(id)) {
+        if (!isHex32(id)) {
             var b = new Uint8Array(16);
             (window.crypto || window.msCrypto).getRandomValues(b);
             id = Array.prototype.map.call(b, function (x) {
@@ -320,22 +360,30 @@ font-size:.88rem;border-bottom:1px solid var(--border)}
     }
 
     /* ---- captive-portal context ----------------------------------- */
-    // A value the FortiGate did not substitute still looks like %%TAG%%.
+    // A value the FortiGate did not substitute still starts with two percent
+    // signs. Never write that pair literally in this script: FortiOS rewrites
+    // anything shaped like a tag, which once broke a regex here on the firewall.
+    var PCT2 = '%' + '%';
+    function unfilled(value) {
+        return value.indexOf(PCT2) === 0;
+    }
+
     function tag(id) {
         var node = el(id);
         var value = node ? (node.value || '') : '';
-        return /^%%.*%%$/.test(value) ? '' : value;
+        return unfilled(value) ? '' : value;
     }
 
     var portalParams = (function () {
-        var out = {}, query = window.location.search.replace(/^\?/, '');
+        var out = {}, query = window.location.search;
+        if (query.charAt(0) === '?') { query = query.substring(1); }
 
         query.split('&').forEach(function (pair) {
             if (!pair) { return; }
             var bits = pair.split('=');
             var k = decodeURIComponent(bits[0] || '').trim();
             if (k && k !== 'action') {
-                out[k] = decodeURIComponent((bits[1] || '').replace(/\+/g, ' '));
+                out[k] = decodeURIComponent((bits[1] || '').split('+').join(' '));
             }
         });
 
@@ -346,7 +394,7 @@ font-size:.88rem;border-bottom:1px solid var(--border)}
         var magic = tag('fgt-magic');
         var redir = tag('fgt-redir');
 
-        if (post && !/^%%.*%%$/.test(post)) { out.post = post; }
+        if (post && !unfilled(post)) { out.post = post; }
         if (magic) { out.magic = magic; }
         if (redir) { out['4Tredir'] = redir; }
 
@@ -409,8 +457,16 @@ font-size:.88rem;border-bottom:1px solid var(--border)}
     }
 
     function clockOf(dt) {
-        var m = /(\d{2}):(\d{2})/.exec(dt || '');
-        return m ? m[1] + ':' + m[2] : '--:--';
+        // First "HH:MM" in the value, e.g. "2026-09-26 14:05:00" -> "14:05".
+        var s = String(dt || ''), i = s.indexOf(':');
+        while (i !== -1) {
+            if (i >= 2 && digits(s.substr(i - 2, 2)).length === 2 &&
+                digits(s.substr(i + 1, 2)).length === 2) {
+                return s.substr(i - 2, 5);
+            }
+            i = s.indexOf(':', i + 1);
+        }
+        return '--:--';
     }
 
     /* ---- countdowns ------------------------------------------------ */
@@ -492,9 +548,9 @@ font-size:.88rem;border-bottom:1px solid var(--border)}
 
     /* ---- actions ---------------------------------------------------- */
     function sendOtp(resend) {
-        var mobile = ui.mobile.value.replace(/\D/g, '');
+        var mobile = digits(ui.mobile.value);
 
-        if (!/^[6-9][0-9]{9}$/.test(mobile)) {
+        if (!isMobile(mobile)) {
             setAlert('Enter a valid 10-digit mobile number.', 'error');
             ui.mobile.focus();
             return;
@@ -536,7 +592,7 @@ font-size:.88rem;border-bottom:1px solid var(--border)}
     }
 
     function verifyOtp() {
-        var otp = ui.otp.value.replace(/\D/g, '');
+        var otp = digits(ui.otp.value);
 
         if (otp.length !== state.otpLength) {
             setAlert('Enter the ' + state.otpLength + '-digit OTP from your SMS.', 'error');
@@ -583,11 +639,11 @@ font-size:.88rem;border-bottom:1px solid var(--border)}
     });
 
     ui.mobile.addEventListener('input', function () {
-        this.value = this.value.replace(/\D/g, '').slice(0, 10);
+        this.value = digits(this.value).slice(0, 10);
     });
 
     ui.otp.addEventListener('input', function () {
-        this.value = this.value.replace(/\D/g, '').slice(0, state.otpLength);
+        this.value = digits(this.value).slice(0, state.otpLength);
         if (this.value.length === state.otpLength && !state.busy) { verifyOtp(); }
     });
 
@@ -652,6 +708,10 @@ font-size:.88rem;border-bottom:1px solid var(--border)}
     });
 
 })();
+
+// Last line of the file: "OK" appears only when the whole page was saved and
+// the main script ran. A truncated upload shows the version without it.
+document.getElementById('page-ver').textContent += ' · OK';
 </script>
 </body>
 </html>
