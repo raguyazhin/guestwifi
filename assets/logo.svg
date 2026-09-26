@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 200" role="img" aria-label="Sankara Nethralaya">
+  <rect width="200" height="200" rx="6" fill="#0095D9"/>
+  <g fill="#FFFFFF" font-family="Arial, Helvetica, sans-serif" font-weight="700" text-anchor="middle">
+    <text x="100" y="54" font-size="30" letter-spacing="1">SANKARA</text>
+    <text x="100" y="88" font-size="30" letter-spacing="1">NETHRALAYA</text>
+  </g>
+  <!-- Stylised eye: two petals meeting at the lower centre -->
+  <path d="M100 178 C 78 150 46 128 14 122 C 40 156 68 174 100 178 Z" fill="#FFFFFF"/>
+  <path d="M100 178 C 122 150 154 128 186 122 C 160 156 132 174 100 178 Z" fill="#FFFFFF"/>
+</svg>

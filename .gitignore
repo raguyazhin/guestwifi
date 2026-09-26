@@ -1,0 +1,15 @@
+# Local configuration - copy config.example.php to config.php and edit it.
+# Never commit config.php: it holds APP_SECRET, the SMS gateway password,
+# the FortiGate account password and the admin password hash.
+config.php
+
+# Runtime logs. sms.log contains guest mobile numbers and live OTPs.
+storage/*.log
+
+# OS / editor noise
+Thumbs.db
+desktop.ini
+.DS_Store
+.vscode/
+.idea/
+*.bak

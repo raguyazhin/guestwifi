@@ -1,0 +1,125 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="robots" content="noindex, nofollow">
+<title>Guest Wi-Fi &middot; Sankara Nethralaya</title>
+<link rel="icon" href="assets/logo.svg" type="image/svg+xml">
+<link rel="stylesheet" href="assets/style.css">
+<script>
+    /* Point this at the portal server. Keep it relative while the page is
+       served by XAMPP; set the full URL once index.html is hosted on the
+       firewall, e.g. "http://10.10.10.20/guestwifi/api.php" (and add that
+       origin to PORTAL_ALLOWED_ORIGINS in config.php). */
+    window.GW_API_BASE = 'api.php';
+</script>
+</head>
+<body>
+
+<main class="portal">
+    <section class="card" aria-live="polite">
+
+        <header class="card-header">
+            <img class="brand-logo" src="assets/logo.png" alt="Sankara Nethralaya"
+                 onerror="this.onerror=null; this.src='assets/logo.svg';">
+            <h1>Guest Wi-Fi Access</h1>
+            <p id="ssid-line">Verify your mobile number to get online</p>
+        </header>
+
+        <div class="card-body">
+
+            <div id="alert" class="alert" role="status"></div>
+
+            <!-- Step 1 ------------------------------------------------ -->
+            <section id="step-mobile" class="step is-active">
+                <h2>Enter your mobile number</h2>
+                <p class="step-hint">We will send a one-time password (OTP) by SMS.</p>
+
+                <form id="form-mobile" novalidate>
+                    <div class="field">
+                        <label for="mobile">Mobile number</label>
+                        <div class="input-group">
+                            <span class="input-prefix">+91</span>
+                            <input id="mobile" name="mobile" type="tel" inputmode="numeric"
+                                   autocomplete="tel-national" maxlength="10" placeholder="10-digit number"
+                                   pattern="[6-9][0-9]{9}" required>
+                        </div>
+                    </div>
+
+                    <button class="btn" type="submit" id="btn-send">
+                        <span class="spinner" aria-hidden="true"></span>
+                        <span class="label">Send OTP</span>
+                    </button>
+                </form>
+
+                <p class="muted center" style="margin-top:16px">
+                    One OTP connects one device. Your number is used only to authorise this session.
+                </p>
+            </section>
+
+            <!-- Step 2 ------------------------------------------------ -->
+            <section id="step-otp" class="step">
+                <h2>Enter the OTP</h2>
+                <p class="step-hint">
+                    Sent to <strong id="masked-mobile"></strong>.
+                    <span id="otp-expiry"></span>
+                </p>
+
+                <form id="form-otp" novalidate>
+                    <div class="field">
+                        <label for="otp">One-time password</label>
+                        <div class="input-group">
+                            <input id="otp" name="otp" type="text" inputmode="numeric"
+                                   autocomplete="one-time-code" maxlength="6"
+                                   class="otp-input" placeholder="------" required>
+                        </div>
+                    </div>
+
+                    <button class="btn" type="submit" id="btn-verify">
+                        <span class="spinner" aria-hidden="true"></span>
+                        <span class="label">Verify &amp; connect</span>
+                    </button>
+                </form>
+
+                <div class="btn-row">
+                    <button class="btn-link" type="button" id="btn-change">Change number</button>
+                    <button class="btn-link" type="button" id="btn-resend" disabled>Resend OTP</button>
+                </div>
+            </section>
+
+            <!-- Step 3 ------------------------------------------------ -->
+            <section id="step-connected" class="step">
+                <div class="status-icon" aria-hidden="true">&#10003;</div>
+                <h2 class="center">You are connected</h2>
+                <p class="step-hint center">Enjoy your visit.</p>
+
+                <ul class="session-facts">
+                    <li><span>Mobile</span><span id="fact-mobile">&ndash;</span></li>
+                    <li><span>Session expires</span><span id="fact-expiry">&ndash;</span></li>
+                    <li><span>Time remaining</span><span id="fact-remaining">&ndash;</span></li>
+                </ul>
+
+                <a class="btn" id="btn-continue" href="#">Start browsing</a>
+
+                <div class="btn-row">
+                    <span class="muted">Finished?</span>
+                    <button class="btn-link" type="button" id="btn-logout">Disconnect this device</button>
+                </div>
+            </section>
+
+        </div>
+
+        <footer class="card-footer">
+            Sankara Nethralaya &middot; Guest network<br>
+            Need help? Contact the reception desk.
+        </footer>
+    </section>
+</main>
+
+<!-- Built and submitted by app.js to hand the session to the firewall -->
+<form id="handoff-form" method="post" style="display:none" aria-hidden="true"></form>
+
+<script src="assets/app.js"></script>
+</body>
+</html>
