@@ -7,43 +7,29 @@
 <title>Guest Wi-Fi &middot; Sankara Nethralaya</title>
 
 <!--
-  ==================================================================
-  SINGLE-FILE CAPTIVE PORTAL PAGE  -  upload this file to the
-  FortiGate as the authentication Login Page replacement message.
-  Nothing else goes on the firewall.
+  SINGLE-FILE CAPTIVE PORTAL PAGE
+  Upload this one file to the FortiGate as the authentication Login Page
+  replacement message. Nothing else goes on the firewall.
 
-  EDIT ONE LINE BELOW: set GW_API_BASE to your XAMPP server.
-  ==================================================================
+  EDIT ONE LINE: set GW_API_BASE below to your XAMPP server's IP.
 
-  Before this works, three things must be true on your side:
+  Also required (full details in README.md, section 4):
+    - config.php  : PORTAL_ALLOWED_ORIGINS, FORTIGATE_MODE='form_post',
+                    FORTIGATE_ALLOWED_HOSTS, FORTIGATE_SHARED_PASS
+    - a firewall policy letting UNAUTHENTICATED guests reach the XAMPP
+      server on TCP 80, placed above the captive-portal policy
+    - the same scheme on both sides: an HTTPS page cannot call an http://
+      API, the browser blocks it as mixed content with no visible error
 
-  1. config.php on the XAMPP server:
-        define('PORTAL_ALLOWED_ORIGINS', json_encode(['https://<fortigate-ip>:1003']));
-        define('FORTIGATE_MODE', 'form_post');
-        define('FORTIGATE_ALLOWED_HOSTS', json_encode(['<fortigate-ip>']));
-        define('FORTIGATE_SHARED_USER', 'guestwifi');
-        define('FORTIGATE_SHARED_PASS', '<password of that local user>');
-
-  2. A firewall policy letting UNAUTHENTICATED guests reach the XAMPP
-     server on TCP 80 (or 443), placed above the captive-portal policy.
-     Without it the guest cannot call the API and no OTP is ever sent.
-
-  3. Same scheme on both sides. A page the FortiGate serves over HTTPS
-     cannot call an http:// API - the browser blocks it as mixed
-     content, with no error the guest can see. Either put the XAMPP
-     server behind HTTPS with a certificate guests trust, or use the
-     FortiGate's HTTP auth listener.
-
-  The firewall password is never in this file. The page asks the
-  server for it only after an OTP has been verified, so a guest who
-  views the page source learns nothing.
+  The firewall password is never in this file. The page receives it only
+  after an OTP has been verified.
 -->
 
 <script>
     /* >>> EDIT THIS: full URL of api.php on the XAMPP server.
            Use the IP address, not a hostname - DNS is usually blocked
            before the guest authenticates. */
-    window.GW_API_BASE = 'http://192.168.1.50/guestwifi/api.php';
+    window.GW_API_BASE = 'http://192.168.0.101/guestwifi/api.php';
 </script>
 
 <style>
@@ -56,14 +42,15 @@ body{font-family:"Segoe UI",Roboto,"Helvetica Neue",Arial,sans-serif;background:
 color:var(--text);line-height:1.5;-webkit-font-smoothing:antialiased}
 .portal{min-height:100vh;display:flex;align-items:center;justify-content:center;padding:24px 16px;
 background:radial-gradient(1100px 380px at 50% -140px,#d4ecf9 0,rgba(212,236,249,0) 70%),var(--bg)}
-.card{width:100%;max-width:430px;background:var(--surface);border-radius:14px;
+.card{width:100%;max-width:460px;background:var(--surface);border-radius:16px;
 box-shadow:var(--shadow);overflow:hidden}
-.card-header{padding:28px 26px 22px;text-align:center;border-bottom:1px solid var(--border)}
-.brand-logo{width:84px;height:84px;display:block;margin:0 auto 14px;border-radius:8px}
-.card-header h1{margin:0;font-size:1.22rem;letter-spacing:.2px}
+.card-header{padding:26px 26px 20px;text-align:center;border-bottom:1px solid var(--border)}
+.brand-logo{display:block;width:140px;height:auto;max-height:118px;object-fit:contain;margin:0 auto 12px}
+.hospital{font-weight:700;color:#1769aa;font-size:.9rem;letter-spacing:.4px;margin-bottom:10px}
+.card-header h1{margin:0;font-size:1.25rem;letter-spacing:.2px}
 .card-header p{margin:6px 0 0;color:var(--muted);font-size:.9rem}
-.card-body{padding:24px 26px 28px}
-.card-footer{padding:14px 26px 20px;text-align:center;color:var(--muted);font-size:.76rem}
+.card-body{padding:22px 26px 26px}
+.card-footer{padding:14px 26px 20px;text-align:center;color:var(--muted);font-size:.76rem;line-height:1.6}
 .step{display:none}
 .step.is-active{display:block;animation:fade .22s ease-out}
 @keyframes fade{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:none}}
@@ -100,6 +87,19 @@ border-radius:50%;animation:spin .7s linear infinite;display:none}
 .alert-warn{background:var(--warn-bg);color:var(--warn);border-color:#f0dcb4}
 .muted{color:var(--muted);font-size:.82rem}
 .center{text-align:center}
+/* Terms step */
+.notice{background:#eef8ff;border:1px solid #c9e7fa;border-radius:10px;padding:11px 14px;
+font-size:.85rem;color:var(--brand-ink);margin-bottom:16px}
+.terms-box{background:#f8fbfd;border:1px solid #dbeaf3;border-radius:9px;padding:14px 15px;
+max-height:190px;overflow:auto;font-size:.81rem;color:#536b7d;line-height:1.6}
+.terms-box p{margin:0 0 10px}
+.terms-box p:last-child{margin:0}
+.agree{display:flex;gap:10px;align-items:flex-start;margin:15px 0 2px;font-size:.85rem;
+color:var(--text);font-weight:400;cursor:pointer}
+.agree input{width:18px;height:18px;margin:2px 0 0;flex:none;accent-color:var(--brand)}
+.access-note{background:#f0faf4;border:1px solid #bde5ca;color:#197343;padding:10px 12px;
+border-radius:8px;text-align:center;margin-top:14px;font-size:.82rem}
+/* Connected step */
 .status-icon{width:66px;height:66px;margin:4px auto 16px;border-radius:50%;background:var(--ok-bg);
 color:var(--ok);display:flex;align-items:center;justify-content:center;font-size:2rem}
 .session-facts{list-style:none;margin:0 0 18px;padding:0;border:1px solid var(--border);
@@ -109,7 +109,8 @@ font-size:.88rem;border-bottom:1px solid var(--border)}
 .session-facts li:last-child{border-bottom:0}
 .session-facts span:first-child{color:var(--muted)}
 .session-facts span:last-child{font-weight:600}
-@media(max-width:480px){.card-header,.card-body{padding-left:18px;padding-right:18px}}
+@media(max-width:480px){.card-header,.card-body{padding-left:18px;padding-right:18px}
+.brand-logo{width:125px}}
 </style>
 </head>
 <body>
@@ -118,15 +119,8 @@ font-size:.88rem;border-bottom:1px solid var(--border)}
     <section class="card" aria-live="polite">
 
         <header class="card-header">
-            <svg class="brand-logo" viewBox="0 0 200 200" role="img" aria-label="Sankara Nethralaya">
-                <rect width="200" height="200" rx="6" fill="#0095D9"/>
-                <g fill="#FFF" font-family="Arial,Helvetica,sans-serif" font-weight="700" text-anchor="middle">
-                    <text x="100" y="54" font-size="30">SANKARA</text>
-                    <text x="100" y="88" font-size="30">NETHRALAYA</text>
-                </g>
-                <path d="M100 178C78 150 46 128 14 122c26 34 54 52 86 56z" fill="#FFF"/>
-                <path d="M100 178c22-28 54-50 86-56-26 34-54 52-86 56z" fill="#FFF"/>
-            </svg>
+            <img class="brand-logo" src="data:image/png;base64,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" alt="Sankara Nethralaya">
+            <div class="hospital">SANKARA NETHRALAYA</div>
             <h1>Guest Wi-Fi Access</h1>
             <p id="ssid-line">Verify your mobile number to get online</p>
         </header>
@@ -142,9 +136,39 @@ font-size:.88rem;border-bottom:1px solid var(--border)}
 
             <div id="alert" class="alert" role="status"></div>
 
-            <!-- Step 1 ------------------------------------------------ -->
-            <section id="step-mobile" class="step is-active">
-                <h2>Enter your mobile number</h2>
+            <!-- Step 1: terms ----------------------------------------- -->
+            <section id="step-terms" class="step is-active">
+                <div class="notice">
+                    This is a secure guest Wi-Fi network. Internet access is provided
+                    for authorised guest use only.
+                </div>
+
+                <h2>Terms &amp; Conditions</h2>
+                <p class="step-hint">Please read and accept before continuing.</p>
+
+                <div class="terms-box" tabindex="0">
+                    <p>By using this guest Wi-Fi service, you agree to use the network
+                       responsibly and in accordance with applicable rules and policies.</p>
+                    <p>Do not use the network for unlawful activities, unauthorised access,
+                       malware distribution, or activities that may affect other users or
+                       hospital systems.</p>
+                    <p>Guest Wi-Fi access is intended for internet access only. Access to
+                       internal hospital systems and private network resources is restricted.</p>
+                    <p>The hospital may monitor network traffic for security, troubleshooting
+                       and abuse prevention purposes, in accordance with applicable policies.</p>
+                </div>
+
+                <label class="agree">
+                    <input type="checkbox" id="agree">
+                    <span>I have read and agree to the Guest Wi-Fi terms and conditions.</span>
+                </label>
+
+                <button class="btn" type="button" id="btn-agree" style="margin-top:14px">Continue</button>
+            </section>
+
+            <!-- Step 2: mobile ---------------------------------------- -->
+            <section id="step-mobile" class="step">
+                <h2>Mobile verification</h2>
                 <p class="step-hint">We will send a one-time password (OTP) by SMS.</p>
 
                 <form id="form-mobile" novalidate>
@@ -167,16 +191,16 @@ font-size:.88rem;border-bottom:1px solid var(--border)}
                 </p>
             </section>
 
-            <!-- Step 2 ------------------------------------------------ -->
+            <!-- Step 3: OTP ------------------------------------------- -->
             <section id="step-otp" class="step">
-                <h2>Enter the OTP</h2>
+                <h2>OTP verification</h2>
                 <p class="step-hint">
                     Sent to <strong id="masked-mobile"></strong>. <span id="otp-expiry"></span>
                 </p>
 
                 <form id="form-otp" novalidate>
                     <div class="field">
-                        <label for="otp">One-time password</label>
+                        <label for="otp">Enter the 6-digit OTP</label>
                         <div class="input-group">
                             <input id="otp" type="text" inputmode="numeric" autocomplete="one-time-code"
                                    maxlength="6" class="otp-input" placeholder="------" required>
@@ -192,9 +216,11 @@ font-size:.88rem;border-bottom:1px solid var(--border)}
                     <button class="btn-link" type="button" id="btn-change">Change number</button>
                     <button class="btn-link" type="button" id="btn-resend" disabled>Resend OTP</button>
                 </div>
+
+                <div class="access-note" id="access-note"></div>
             </section>
 
-            <!-- Step 3 ------------------------------------------------ -->
+            <!-- Step 4: connected ------------------------------------- -->
             <section id="step-connected" class="step">
                 <div class="status-icon" aria-hidden="true">&#10003;</div>
                 <h2 class="center">You are connected</h2>
@@ -217,7 +243,7 @@ font-size:.88rem;border-bottom:1px solid var(--border)}
         </div>
 
         <footer class="card-footer">
-            Sankara Nethralaya &middot; Guest network<br>
+            Powered by Sankara Nethralaya &middot; Chennai<br>
             Need help? Contact the reception desk.
         </footer>
     </section>
@@ -247,11 +273,12 @@ font-size:.88rem;border-bottom:1px solid var(--border)}
 
     var ui = {
         alert: el('alert'), ssidLine: el('ssid-line'),
+        agree: el('agree'), btnAgree: el('btn-agree'),
         formMobile: el('form-mobile'), formOtp: el('form-otp'),
         mobile: el('mobile'), otp: el('otp'),
         btnSend: el('btn-send'), btnVerify: el('btn-verify'), btnResend: el('btn-resend'),
         btnChange: el('btn-change'), btnLogout: el('btn-logout'), btnContinue: el('btn-continue'),
-        masked: el('masked-mobile'), otpExpiry: el('otp-expiry'),
+        masked: el('masked-mobile'), otpExpiry: el('otp-expiry'), accessNote: el('access-note'),
         factMobile: el('fact-mobile'), factExpiry: el('fact-expiry'), factLeft: el('fact-remaining'),
         handoff: el('handoff-form')
     };
@@ -344,7 +371,7 @@ font-size:.88rem;border-bottom:1px solid var(--border)}
 
     /* ---- view helpers ---------------------------------------------- */
     function showStep(name) {
-        ['mobile', 'otp', 'connected'].forEach(function (s) {
+        ['terms', 'mobile', 'otp', 'connected'].forEach(function (s) {
             el('step-' + s).classList.toggle('is-active', s === name);
         });
         if (name === 'mobile') { setTimeout(function () { ui.mobile.focus(); }, 60); }
@@ -443,7 +470,7 @@ font-size:.88rem;border-bottom:1px solid var(--border)}
         var form = ui.handoff;
 
         if (handoff.url) { form.action = handoff.url; }
-        if (f.magic)     { el('fgt-magic').value = f.magic; }
+        if (f.magic)      { el('fgt-magic').value = f.magic; }
         if (f['4Tredir']) { el('fgt-redir').value = f['4Tredir']; }
         el('fgt-user').value = f.username || '';
         el('fgt-pass').value = f.password || '';
@@ -530,6 +557,19 @@ font-size:.88rem;border-bottom:1px solid var(--border)}
     }
 
     /* ---- wiring ----------------------------------------------------- */
+    ui.btnAgree.addEventListener('click', function () {
+        if (!ui.agree.checked) {
+            setAlert('Please accept the terms and conditions to continue.', 'error');
+            return;
+        }
+        setAlert('');
+        showStep('mobile');
+    });
+
+    ui.agree.addEventListener('change', function () {
+        if (this.checked) { setAlert(''); }
+    });
+
     ui.mobile.addEventListener('input', function () {
         this.value = this.value.replace(/\D/g, '').slice(0, 10);
     });
@@ -560,7 +600,8 @@ font-size:.88rem;border-bottom:1px solid var(--border)}
             state.sessionLeft = 0;
             ui.mobile.value = '';
             ui.otp.value = '';
-            showStep('mobile');
+            ui.agree.checked = false;
+            showStep('terms');
             setAlert(res.message || 'Disconnected.', 'info');
         });
     });
@@ -580,6 +621,13 @@ font-size:.88rem;border-bottom:1px solid var(--border)}
         ui.otp.maxLength = state.otpLength;
         ui.otp.placeholder = new Array(state.otpLength + 1).join('-');
 
+        // Quote the duration the server is actually configured for, rather
+        // than a number hard-coded into the page.
+        if (res.session_mins) {
+            ui.accessNote.textContent = 'Internet access will be available for '
+                + res.session_mins + ' minutes after successful verification.';
+        }
+
         if (res.ssid) {
             ui.ssidLine.textContent = 'Connected to ' + res.ssid +
                 ' · verify your mobile number to get online';
@@ -588,8 +636,6 @@ font-size:.88rem;border-bottom:1px solid var(--border)}
         if (res.connected && res.session) {
             showConnected(res.session, null);
             setAlert('This device is already online.', 'ok');
-        } else {
-            ui.mobile.focus();
         }
     });
 
