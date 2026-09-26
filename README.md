@@ -1,82 +1,73 @@
 # Guest Wi-Fi OTP Portal
 
-A captive-portal login page for the Sankara Nethralaya guest network. A visitor
-lands on the page, enters a mobile number, receives an OTP by SMS, and is put
-online for a fixed period.
+A captive-portal login for the Sankara Nethralaya guest network. A visitor
+lands on the page, accepts the terms, enters a mobile number, receives an OTP
+by SMS, and is put online for a fixed period.
 
 **The rule the whole system is built around:** one OTP grants internet access to
 exactly one device — the device that requested it. Forwarding the code to a
 second phone does not work.
 
+Runs on **PHP 5.6.3 or newer**, including PHP 7 and 8.
+
 ---
 
-## 1. Quick start on XAMPP
+## 1. Files
 
-1. Put this folder at `C:\xampp\htdocs\guestwifi` (or wherever your `htdocs` is).
-2. Copy `config.example.php` to `config.php`, then set `APP_SECRET` to a fresh
-   random value and `ADMIN_PASS_HASH` to a password hash:
+The whole application is seven files.
+
+```
+portal-standalone.html   the guest portal - ONE self-contained file (CSS, JS,
+                         logo all inlined). Test it locally, then upload this
+                         single file to the FortiGate. Nothing else goes there.
+api.php                  JSON API: init, send_otp, verify_otp, status, logout
+portal.php               all the logic - compat, database, OTP policy, sessions,
+                         SMS drivers, FortiGate handoff
+config.php               every setting (not in git - holds the secrets)
+config.example.php       template: copy to config.php
+install.php              creates the database, audits the server and config
+admin.php                dashboard: who is online, OTP log, SMS gateway replies
+storage/                 sms.log, error.log, security.log (created at runtime)
+```
+
+Everything on the server side lives in `htdocs\guestwifi`. Only
+`portal-standalone.html` is ever copied to the firewall.
+
+---
+
+## 2. Quick start on XAMPP
+
+1. Put this folder at `C:\xampp\htdocs\guestwifi`.
+2. Copy `config.example.php` to `config.php`, then set `APP_SECRET` and
+   `ADMIN_PASS_HASH`:
    ```
    php -r "echo bin2hex(random_bytes(32));"
    php -r "echo password_hash('your-admin-password', PASSWORD_DEFAULT);"
    ```
-   `config.php` is deliberately not in version control — it holds every secret
-   the portal uses.
-3. Start **Apache** and **MySQL** from the XAMPP control panel.
-4. Open <http://localhost/guestwifi/install.php>.
-   It creates the database and tables and reports anything still unsafe.
-5. Open <http://localhost/guestwifi/index.html> — the portal.
+3. Start **Apache** and **MySQL** in the XAMPP control panel.
+4. Open <http://localhost/guestwifi/install.php> — it creates the database and
+   reports anything unsafe.
+5. Open <http://localhost/guestwifi/portal-standalone.html>.
 
-Out of the box `SMS_DRIVER` is `log`, so no SMS is sent and nothing is charged.
-The message that *would* have been sent is written to `storage/sms.log` and
-shown at <http://localhost/guestwifi/dev/inbox.php>, so you can walk the whole
-flow on one machine.
+### Testing without an SMS gateway
 
-### Test it end to end
+`SMS_DRIVER` ships as `log`: no SMS is sent and nothing is charged. The message
+that *would* have gone out is written to `storage/sms.log` and shown in full —
+OTP included — in the **SMS gateway log** on <http://localhost/guestwifi/admin.php>
+(default login `admin` / `admin123`).
 
 | Step | What to do |
 |------|------------|
-| 1 | Open the portal, type any valid 10-digit number starting 6–9 |
-| 2 | Open `dev/inbox.php` in a second tab and read the OTP |
-| 3 | Type it into the portal — you land on the "connected" screen |
-| 4 | Open the same OTP in a **different browser** — it is rejected |
-
----
-
-## 2. Connecting a real SMS gateway
-
-Edit `config.php`. For most Indian HTTP gateways only the `http` driver block
-needs touching:
-
-```php
-define('SMS_DRIVER',   'http');
-define('SMS_HTTP_URL', 'https://sms.timesapi.in/api/v1/send');
-define('SMS_USERNAME', '...');
-define('SMS_PASSWORD', '...');
-define('SMS_SENDER_ID', 'SNALRT');
-```
-
-`SMS_HTTP_PARAMS` is the request your gateway expects. Rename the keys to match
-its documentation; the values `{mobile} {message} {sender} {username} {password}`
-are filled in at send time.
-
-If your gateway answers HTTP 200 even when it rejects a message, list the text
-that means success so failures are not silently treated as delivered:
-
-```php
-define('SMS_SUCCESS_MARKERS', json_encode(['"status":"success"']));
-```
-
-`msg91` and `twilio` drivers are also included — set `SMS_DRIVER` and fill in
-that driver's credentials.
-
-Every send is recorded in the `sms_log` table with the gateway's reply, visible
-in the admin dashboard. The OTP itself is masked before it is stored.
+| 1 | Open the portal, accept the terms, enter any number starting 6–9 |
+| 2 | Open `admin.php` in a second tab and read the OTP from the SMS log |
+| 3 | Type it into the portal — you reach the "connected" screen |
+| 4 | Try that same OTP in a **different browser** — it is rejected |
 
 ---
 
 ## 3. The access rules
 
-All of these live at the top of `config.php`.
+All in `config.php`.
 
 | Rule | Setting | Default |
 |------|---------|---------|
@@ -92,9 +83,9 @@ All of these live at the top of `config.php`.
 | Length of internet access | `SESSION_MINUTES` | 120 |
 | Restrict to a pre-approved list | `REQUIRE_ALLOWED_LIST` | `false` |
 
-`REQUIRE_ALLOWED_LIST` is `false`, i.e. an open guest portal: any valid number
-may log in. Set it to `true` and manage the numbers under **Approved numbers**
-in the admin dashboard to turn it into a staff-only portal.
+`REQUIRE_ALLOWED_LIST` is `false`, i.e. an open guest portal. Set it to `true`
+and manage numbers under **Approved numbers** in the dashboard to make it
+staff-only.
 
 ### How "one OTP, one device" is enforced
 
@@ -103,82 +94,36 @@ in the admin dashboard to turn it into a staff-only portal.
    digits are compared — so a second device learns nothing about the code and
    cannot use up the real user's attempts.
 3. The code is then spent with `UPDATE … WHERE used = 0`. Two simultaneous
-   verifications cannot both succeed; only one can change the row.
-4. The resulting session is tied to that same device id, and a second device on
-   the same number is refused while it is open.
+   verifications cannot both succeed.
+4. The session is tied to that same device id, and a second device on the same
+   number is refused while it is open.
 
-**Device id** is the MAC address the firewall passes in the redirect
-(`usermac`). That survives a browser restart, private browsing and cleared
-cookies. When there is no MAC — testing locally, or a firewall that does not
-pass one — the portal falls back to a signed cookie plus a browser-generated id,
-which is an *application* identifier, not proof of hardware identity. For the
-guarantee to be real in production, the firewall must pass `usermac`.
+**Device id** is the MAC the firewall passes as `usermac`, which survives a
+browser restart, private browsing and cleared cookies. Without a MAC — testing
+locally, or a firewall that does not send one — it falls back to a signed
+cookie plus a browser-generated id. That is an *application* identifier, not
+proof of hardware identity. For the guarantee to be real in production the
+firewall must pass `usermac`.
 
 ---
 
-## 4. FortiGate integration
+## 4. Putting the page on the FortiGate
 
-The portal verifies the OTP. Opening the firewall session is a separate step,
-controlled by `FORTIGATE_MODE`:
+Upload **`portal-standalone.html`** under
+*System > Replacement Messages > Authentication > Login Page*. It is about
+31 KB, within the usual limit, and needs no other files.
 
-| Mode | What happens after a valid OTP |
-|------|-------------------------------|
-| `none` | Success screen only. Use for local testing. |
-| `form_post` | The browser posts credentials back to the FortiGate URL that redirected it here — the standard FortiOS external-portal flow. |
-| `api` | A local user is provisioned over the FortiOS REST API first, then the same form post. |
+The page works in both places without editing: served from `/guestwifi/` it
+calls `api.php` next to it; anywhere else it uses the absolute URL at the top
+of the file. Set that URL to your server's fixed IP (not a hostname — DNS is
+usually blocked before a guest signs in):
 
-### Setting up `form_post`
-
-On the FortiGate, point the captive portal at this page:
-
-```
-Security Profiles / Authentication > Captive Portal
-  Portal type:   External
-  Portal URL:    http://<xampp-server-ip>/guestwifi/index.html
+```js
+window.GW_PORTAL_SERVER = 'http://192.168.0.101/guestwifi/api.php';
 ```
 
-FortiOS then redirects clients with `?post=…&magic=…&usermac=…&4Tredir=…`
-appended. The portal captures those, and after a valid OTP the browser posts
-`magic`, `username`, `password` and `4Tredir` to the firewall's `post` URL.
-
-In `config.php`:
-
-```php
-define('FORTIGATE_MODE', 'form_post');
-define('FORTIGATE_ALLOWED_HOSTS', json_encode(['192.168.1.99']));  // your firewall
-define('FORTIGATE_SHARED_USER', 'guestwifi');
-define('FORTIGATE_SHARED_PASS', '<the local user password>');
-```
-
-`FORTIGATE_ALLOWED_HOSTS` is a safety catch, not a formality: without it, a
-crafted `?post=https://attacker.tld` would make the portal hand your firewall
-password to someone else. Requests to an unlisted host are refused and logged
-to `storage/error.log`.
-
-With `FORTIGATE_CRED_MODE = 'shared'` every guest authenticates to FortiOS with
-one local account, and this portal is the real gatekeeper. Create that account
-on the firewall (`User & Authentication > Local Users`) and put it in the group
-your captive-portal policy allows.
-
-If you need per-guest firewall accounts instead, set
-`FORTIGATE_CRED_MODE = 'mobile'` together with `FORTIGATE_MODE = 'api'` and fill
-in the `FORTIGATE_API_*` settings. Endpoint paths differ between FortiOS
-versions — check them in the firewall's own API browser before enabling it.
-
-### Hosting the page on the firewall
-
-Use **`portal-standalone.html`** for this. A FortiGate replacement message is a
-single HTML document — it will not serve `style.css` and `app.js` as separate
-files alongside the page — so that file has the CSS, the JavaScript and the logo
-all inlined. It is the only file that goes on the firewall; everything else
-stays on the XAMPP server.
-
-Upload it under *System > Replacement Messages > Authentication > Login Page*.
-It is about 25 KB, within the usual limit.
-
-Unlike the external-portal model, when the firewall serves the page itself there
-are no `usermac`/`magic` query parameters. FortiOS substitutes its own tags
-instead, and the file reads them from the hidden login form:
+When FortiOS serves the page it substitutes its own tags, which the file reads
+from a hidden login form:
 
 | Tag | Used for |
 |-----|----------|
@@ -186,121 +131,124 @@ instead, and the file reads them from the hidden login form:
 | `%%MAGIC%%` | the session key FortiOS expects back |
 | `%%PROTURI%%` | the page the guest originally asked for |
 
-The same file still works when opened from XAMPP — unsubstituted tags are
-detected and ignored — so you can test it before uploading.
+Then in `config.php`:
 
-Four things to set up:
+```php
+define('PORTAL_ALLOWED_ORIGINS', json_encode(['https://192.168.1.99:1003']));
+define('FORTIGATE_MODE', 'form_post');
+define('FORTIGATE_ALLOWED_HOSTS', json_encode(['192.168.1.99']));
+define('FORTIGATE_SHARED_PASS', '<password of the guestwifi local user>');
+```
 
-1. In `portal-standalone.html`, point the API at this server (IP, not hostname —
-   DNS is usually blocked before the guest authenticates):
-   ```js
-   window.GW_API_BASE = 'http://192.168.1.50/guestwifi/api.php';
-   ```
-2. In `config.php`, allow that origin and enable the handoff:
-   ```php
-   define('PORTAL_ALLOWED_ORIGINS', json_encode(['https://192.168.1.99:1003']));
-   define('FORTIGATE_MODE', 'form_post');
-   define('FORTIGATE_ALLOWED_HOSTS', json_encode(['192.168.1.99']));
-   ```
-3. A firewall policy letting **unauthenticated** guests reach the XAMPP server on
-   TCP 80 (or 443), above the captive-portal policy. Without it the guest cannot
-   call the API and no OTP is ever sent.
-4. Matching schemes on both sides. A page FortiOS serves over HTTPS **cannot**
-   call an `http://` API — the browser blocks it as mixed content, silently, with
-   nothing the guest can see. Either put the XAMPP server behind HTTPS with a
-   certificate guests trust, or use the FortiGate's HTTP auth listener.
+Two more things that are easy to miss:
 
-The firewall password is never written into the page. The browser receives it
-only after an OTP has been verified, so a guest reading the page source learns
-nothing.
+- **A firewall policy letting unauthenticated guests reach the portal server**
+  on TCP 80, above the captive-portal policy. Without it the guest cannot call
+  the API and no OTP is ever sent. This is the most common failure.
+- **Matching schemes.** A page FortiOS serves over HTTPS cannot call an
+  `http://` API — the browser blocks it as mixed content, silently. Either put
+  the portal server behind HTTPS with a certificate guests trust, or use the
+  FortiGate's HTTP auth listener.
 
-Note that in this model the firewall passes no client MAC, so device binding
-falls back to a browser-stored identifier. See
-[How "one OTP, one device" is enforced](#how-one-otp-one-device-is-enforced).
+### FORTIGATE_MODE
+
+| Mode | What happens after a valid OTP |
+|------|-------------------------------|
+| `none` | Success screen only; the firewall keeps blocking. Local testing. |
+| `form_post` | The browser posts credentials to the FortiGate. **Use this.** |
+| `api` | Provisions a local user over the FortiOS REST API first, then posts. |
+
+With `FORTIGATE_CRED_MODE = 'shared'` every guest authenticates to FortiOS with
+one local account. The firewall is the gate; this portal is the lock. Create
+that account under *User & Authentication > User Definition*, put it in the
+group your captive-portal policy allows, and set its password in `config.php`.
+
+`FORTIGATE_ALLOWED_HOSTS` is a safety catch, not a formality: the firewall
+supplies the post URL in the query string, a guest can edit that, and without
+the list the portal would hand your firewall password to whatever server they
+named. Unlisted hosts are refused and logged to `storage/error.log`.
 
 ---
 
-## 5. API
+## 5. SMS gateway
+
+```php
+define('SMS_DRIVER',   'http');
+define('SMS_HTTP_URL', 'https://sms.timesapi.in/api/v1/send');
+define('SMS_USERNAME', '...');
+define('SMS_PASSWORD', '...');
+define('SMS_SENDER_ID', 'SNALRT');
+```
+
+`SMS_HTTP_PARAMS` is the request your gateway expects — rename the keys to match
+its documentation; `{mobile} {message} {sender} {username} {password}` are filled
+in at send time.
+
+If the gateway answers HTTP 200 even when it rejects a message, list the text
+that means success, or failures will be recorded as delivered:
+
+```php
+define('SMS_SUCCESS_MARKERS', json_encode(['"status":"success"']));
+```
+
+`msg91` and `twilio` drivers are also built in. Every send is recorded in
+`sms_log` with the gateway's reply, visible in the dashboard. The OTP is masked
+before storage unless the driver is `log` and `APP_DEBUG` is on.
+
+---
+
+## 6. API
 
 All responses are JSON: `{ success, message, code, … }`. `code` is stable and
-machine-readable; `message` is the text shown to the guest.
+machine-readable; `message` is what the guest sees.
 
 | Endpoint | Body | Purpose |
 |----------|------|---------|
-| `POST api.php?action=init` | firewall redirect params | Capture context, report whether this device is already online |
-| `POST api.php?action=send_otp` | `{ mobile }` | Apply the policy checks, generate and send an OTP |
-| `POST api.php?action=verify_otp` | `{ mobile, otp }` | Verify, open a session, return the firewall handoff |
+| `POST api.php?action=init` | firewall params | Capture context; is this device already online? |
+| `POST api.php?action=send_otp` | `{ mobile }` | Apply policy, generate and send an OTP |
+| `POST api.php?action=verify_otp` | `{ mobile, otp }` | Verify, open a session, return the handoff |
 | `GET api.php?action=status` | — | Session state for this device |
 | `POST api.php?action=logout` | — | End this device's session |
 
-Useful `code` values: `otp_sent`, `invalid_mobile`, `not_allowed`, `cooldown`,
-`device_limit`, `daily_limit`, `already_connected`, `sms_failed`, `invalid_otp`,
-`otp_expired`, `device_mismatch`, `too_many_attempts`, `otp_already_used`,
-`verified`.
+Codes: `otp_sent`, `invalid_mobile`, `not_allowed`, `cooldown`, `device_limit`,
+`daily_limit`, `already_connected`, `sms_failed`, `invalid_otp`, `otp_expired`,
+`device_mismatch`, `too_many_attempts`, `otp_already_used`, `verified`.
 
 ---
 
-## 6. Admin dashboard
+## 7. Running on PHP 5.6
 
-<http://localhost/guestwifi/admin/> — default credentials `admin` / `admin123`.
+The code avoids `??`, type declarations, `match` and `str_contains`, so it parses
+on 5.6. Two functions the OTP depends on — `random_bytes()` and `random_int()` —
+do not exist before PHP 7 and are polyfilled at the top of `portal.php`.
 
-Shows who is online, recent OTP requests and their status, every allow/reject
-decision, the SMS gateway log, and the approved-number list. Any device can be
-disconnected from here.
+Those polyfills use **`openssl_random_pseudo_bytes()`** and throw rather than
+fall back to `mt_rand()`. That is deliberate: `mt_rand()`'s state can be
+recovered from a handful of outputs, so an attacker collecting a few OTPs could
+predict the next one. **The OpenSSL extension must be enabled on PHP 5.6** or
+the portal will refuse to issue codes. `install.php` checks this explicitly.
 
-Change the password before going live:
-
-```
-php -r "echo password_hash('your-new-password', PASSWORD_DEFAULT);"
-```
-
-and paste the result into `ADMIN_PASS_HASH`.
+PHP 5.6 itself has had no security updates since December 2018. Moving that
+server to PHP 8 remains the better answer when it becomes possible; nothing in
+this code needs to change for it.
 
 ---
 
-## 7. Before going live
+## 8. Before going live
 
-- [ ] `APP_DEBUG` → `false` (this also disables `dev/inbox.php`)
-- [ ] `APP_SECRET` → a fresh random value (`php -r "echo bin2hex(random_bytes(32));"`).
-      Changing it later logs everyone out.
+- [ ] `APP_DEBUG` → `false`
+- [ ] `APP_SECRET` → a fresh random value (changing it later logs everyone out)
 - [ ] `ADMIN_PASS_HASH` → a new password
 - [ ] `SMS_DRIVER` → your real gateway, and send one live test
-- [ ] `FORTIGATE_MODE` → `form_post` (or `api`), with `FORTIGATE_ALLOWED_HOSTS` set
-- [ ] Delete `install.php` and the `dev/` folder from the server
+- [ ] `FORTIGATE_MODE` → `form_post`, with `FORTIGATE_ALLOWED_HOSTS` set
+- [ ] Delete `install.php` from the server
+- [ ] Give the portal server a fixed IP — the firewall config hardcodes it
 - [ ] Put the portal behind HTTPS, or accept that the OTP travels in clear text
       on the guest VLAN
 - [ ] Confirm the firewall passes `usermac`, otherwise device binding is
       cookie-based only
-- [ ] Decide how long to keep `login_history` / `otp_requests` under your data
-      retention policy — nothing is purged automatically
+- [ ] Decide a retention period for `login_history` and `otp_requests` —
+      nothing is purged automatically
 
-Sessions and OTPs expire on their own; every API call clears anything stale, so
-no cron job is required.
-
----
-
-## 8. Files
-
-```
-index.html            the portal page (mobile → OTP → connected)
-assets/               style.css, app.js, logo — all static, no build step
-portal-standalone.html  the same portal as ONE self-contained file, for
-                      uploading to the FortiGate replacement message
-api.php               JSON API: init, send_otp, verify_otp, status, logout
-config.php            every setting lives here
-install.php           creates/upgrades the schema, checks the configuration
-lib/
-  util.php            time, JSON, mobile/MAC normalising, signing, logging
-  db.php              PDO connection, schema installer, stale-record cleanup
-  portal.php          firewall redirect params, device identity, FortiGate handoff
-  otp.php             issue and verify — all policy rules live here
-  guest_session.php   internet sessions
-  sms.php             SMS drivers: log, http, msg91, twilio
-admin/index.php       dashboard
-dev/inbox.php         test inbox (debug + 'log' driver + localhost only)
-database/guestwifi.sql  schema, if you prefer phpMyAdmin over install.php
-storage/              sms.log, error.log, security.log
-```
-
-To use the official logo, drop the PNG in as `assets/logo.png` — the page
-prefers it and falls back to the bundled `assets/logo.svg` if it is missing.
+Sessions and OTPs expire on their own; every API call clears stale records, so
+no cron job is needed.

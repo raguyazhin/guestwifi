@@ -11,13 +11,12 @@
  * Every response is JSON: { success, message, code, ... }
  */
 
-require_once __DIR__ . '/lib/otp.php';
-require_once __DIR__ . '/lib/portal.php';
+require_once dirname(__FILE__) . '/portal.php';
 
 gw_portal_start();
 
 /* --- CORS: only for origins named in config (the firewall-hosted page) -- */
-$origin = $_SERVER['HTTP_ORIGIN'] ?? '';
+$origin = isset($_SERVER['HTTP_ORIGIN']) ? $_SERVER['HTTP_ORIGIN'] : '';
 if ($origin !== '' && in_array($origin, gw_config_json('PORTAL_ALLOWED_ORIGINS'), true)) {
     header('Access-Control-Allow-Origin: ' . $origin);
     header('Access-Control-Allow-Credentials: true');
@@ -25,17 +24,16 @@ if ($origin !== '' && in_array($origin, gw_config_json('PORTAL_ALLOWED_ORIGINS')
     header('Access-Control-Allow-Methods: POST, GET, OPTIONS');
     header('Vary: Origin');
 }
-if (($_SERVER['REQUEST_METHOD'] ?? '') === 'OPTIONS') {
+if (isset($_SERVER['REQUEST_METHOD']) && $_SERVER['REQUEST_METHOD'] === 'OPTIONS') {
     http_response_code(204);
     exit;
 }
 
 $input  = gw_input();
-$action = $_GET['action'] ?? gw_field($input, 'action', 32);
+$action = isset($_GET['action']) ? $_GET['action'] : gw_field($input, 'action', 32);
 
-// The firewall's parameters arrive on the landing URL; app.js forwards them
-// on the first call. Re-capturing on every request is harmless and keeps a
-// mid-flow reload from losing the context.
+// The firewall's parameters arrive on the landing URL and the page forwards
+// them on every call, so a mid-flow reload does not lose the context.
 gw_capture_portal_context($_GET + $input);
 
 if (!gw_device_is_hardware()) {
@@ -47,13 +45,13 @@ if (!gw_device_is_hardware()) {
 
 try {
     gw_expire_stale();
-} catch (PDOException $e) {
+} catch (Exception $e) {
     gw_fail(
         APP_DEBUG
             ? 'Database not ready: ' . $e->getMessage()
             : 'The portal is not available right now. Please contact the helpdesk.',
         'setup_required',
-        ['setup_url' => 'install.php'],
+        array('setup_url' => 'install.php'),
         503
     );
 }
@@ -65,25 +63,25 @@ try {
     switch ($action) {
 
         /* ---------------------------------------------------------- */
-        case 'init': {
+        case 'init':
             $session = gw_current_session();
 
-            gw_ok('ready', [
-                'app'           => APP_NAME,
-                'org'           => APP_ORG,
-                'otp_length'    => OTP_LENGTH,
-                'otp_minutes'   => OTP_VALID_MINUTES,
-                'resend_after'  => RESEND_COOLDOWN_SEC,
-                'session_mins'  => SESSION_MINUTES,
-                'device_bound'  => gw_device_is_hardware(),
-                'ssid'          => gw_portal_context()['ssid'],
-                'connected'     => $session !== null,
-                'session'       => $session ? gw_session_public($session) : null,
-            ]);
-        }
+            gw_ok('ready', array(
+                'app'          => APP_NAME,
+                'org'          => APP_ORG,
+                'otp_length'   => OTP_LENGTH,
+                'otp_minutes'  => OTP_VALID_MINUTES,
+                'resend_after' => RESEND_COOLDOWN_SEC,
+                'session_mins' => SESSION_MINUTES,
+                'device_bound' => gw_device_is_hardware(),
+                'ssid'         => gw_portal_context()['ssid'],
+                'connected'    => $session !== null,
+                'session'      => $session ? gw_session_public($session) : null,
+            ));
+            break;
 
         /* ---------------------------------------------------------- */
-        case 'send_otp': {
+        case 'send_otp':
             $mobile = gw_normalize_mobile(gw_field($input, 'mobile', 20));
             $result = gw_otp_issue($mobile, $deviceId, $mac);
 
@@ -91,10 +89,10 @@ try {
                 gw_fail($result['message'], $result['code'], $result['data']);
             }
             gw_ok($result['message'], $result['data']);
-        }
+            break;
 
         /* ---------------------------------------------------------- */
-        case 'verify_otp': {
+        case 'verify_otp':
             $mobile = gw_normalize_mobile(gw_field($input, 'mobile', 20));
             $otp    = preg_replace('/\D/', '', gw_field($input, 'otp', 16));
             $result = gw_otp_verify($mobile, $otp, $deviceId);
@@ -106,26 +104,26 @@ try {
             $token = $result['data']['token'];
             gw_set_cookie(GW_SESSION_COOKIE, gw_sign_pack($token), SESSION_MINUTES * 60);
 
-            gw_ok($result['message'], [
+            gw_ok($result['message'], array(
                 'authenticated' => true,
                 'token'         => $token,
                 'session'       => $result['data']['session'],
                 'handoff'       => gw_fortigate_handoff($mobile, $token),
-            ]);
-        }
+            ));
+            break;
 
         /* ---------------------------------------------------------- */
-        case 'status': {
+        case 'status':
             $session = gw_current_session();
 
             if (!$session) {
-                gw_ok('Not connected.', ['connected' => false, 'session' => null]);
+                gw_ok('Not connected.', array('connected' => false, 'session' => null));
             }
-            gw_ok('Connected.', ['connected' => true, 'session' => gw_session_public($session)]);
-        }
+            gw_ok('Connected.', array('connected' => true, 'session' => gw_session_public($session)));
+            break;
 
         /* ---------------------------------------------------------- */
-        case 'logout': {
+        case 'logout':
             $session = gw_current_session();
 
             if ($session) {
@@ -133,20 +131,21 @@ try {
             }
             gw_set_cookie(GW_SESSION_COOKIE, '', -3600);
 
-            gw_ok('You have been disconnected.', ['connected' => false]);
-        }
+            gw_ok('You have been disconnected.', array('connected' => false));
+            break;
 
         /* ---------------------------------------------------------- */
         default:
-            gw_fail('Unknown API action.', 'unknown_action', [], 400);
+            gw_fail('Unknown API action.', 'unknown_action', array(), 400);
     }
-} catch (Throwable $e) {
-    gw_log('error.log', $action . ' failed: ' . $e->getMessage() . ' @ ' . $e->getFile() . ':' . $e->getLine());
+} catch (Exception $e) {
+    gw_log('error.log', $action . ' failed: ' . $e->getMessage()
+        . ' @ ' . $e->getFile() . ':' . $e->getLine());
 
     gw_fail(
         APP_DEBUG ? $e->getMessage() : 'Something went wrong. Please try again.',
         'server_error',
-        [],
+        array(),
         500
     );
 }

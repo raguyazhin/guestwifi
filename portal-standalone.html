@@ -7,11 +7,16 @@
 <title>Guest Wi-Fi &middot; Sankara Nethralaya</title>
 
 <!--
-  SINGLE-FILE CAPTIVE PORTAL PAGE
-  Upload this one file to the FortiGate as the authentication Login Page
-  replacement message. Nothing else goes on the firewall.
+  THE PORTAL PAGE - one self-contained file, used in both places:
 
-  EDIT ONE LINE: set GW_API_BASE below to your XAMPP server's IP.
+    - served by XAMPP at http://<server>/guestwifi/  (normal use, testing)
+    - uploaded to the FortiGate as the authentication Login Page
+      replacement message  (nothing else goes on the firewall)
+
+  It detects which of the two it is and talks to the API accordingly, so
+  the same file works either way with no edit at upload time.
+
+  EDIT ONE LINE: the absolute server URL just below.
 
   Also required (full details in README.md, section 4):
     - config.php  : PORTAL_ALLOWED_ORIGINS, FORTIGATE_MODE='form_post',
@@ -26,10 +31,17 @@
 -->
 
 <script>
-    /* >>> EDIT THIS: full URL of api.php on the XAMPP server.
-           Use the IP address, not a hostname - DNS is usually blocked
-           before the guest authenticates. */
-    window.GW_API_BASE = 'http://192.168.0.101/guestwifi/api.php';
+    /* >>> EDIT THIS: full URL of api.php on the XAMPP server. Use the IP
+           address, not a hostname - DNS is usually blocked before a guest
+           signs in. Only used when this page runs on the firewall. */
+    window.GW_PORTAL_SERVER = 'http://192.168.0.101/guestwifi/api.php';
+
+    /* Served from the guestwifi folder means XAMPP is hosting us, so the
+       API sits right next to this file. Anywhere else means the firewall
+       is serving the page and the API is across the network. */
+    window.GW_API_BASE = /\/guestwifi\//.test(location.pathname)
+        ? 'api.php'
+        : window.GW_PORTAL_SERVER;
 </script>
 
 <style>
