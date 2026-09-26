@@ -1024,7 +1024,11 @@ function gw_sms_driver_http($mobile, $message)
 
     $method = strtoupper(SMS_HTTP_METHOD) === 'POST' ? 'POST' : 'GET';
     $url    = SMS_HTTP_URL;
-    $opts   = array();
+    $verify = !defined('SMS_VERIFY_TLS') || SMS_VERIFY_TLS;
+    $opts   = array(
+        CURLOPT_SSL_VERIFYPEER => (bool) $verify,
+        CURLOPT_SSL_VERIFYHOST => $verify ? 2 : 0,
+    );
 
     if ($method === 'POST') {
         $opts[CURLOPT_POST]       = true;

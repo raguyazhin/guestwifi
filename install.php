@@ -88,7 +88,42 @@ if (APP_SECRET === 'PUT_A_64_CHARACTER_RANDOM_HEX_STRING_HERE' || strlen(APP_SEC
 if (SMS_DRIVER === 'log') {
     $checks[] = array('warn', 'SMS_DRIVER is "log" - OTPs go to storage/sms.log and no SMS is sent. Fine for testing.');
 } else {
-    $checks[] = array('ok', 'SMS driver: ' . SMS_DRIVER);
+    $checks[] = array('ok', 'SMS driver: ' . SMS_DRIVER . ' (live - every OTP costs a message)');
+}
+
+// Reach the gateway without sending anything, so a TLS or CA-bundle problem
+// shows up here instead of as a silent "could not send the OTP" for guests.
+if (SMS_DRIVER === 'http') {
+    $host = parse_url(SMS_HTTP_URL, PHP_URL_HOST);
+    $verify = !defined('SMS_VERIFY_TLS') || SMS_VERIFY_TLS;
+
+    $ch = curl_init(SMS_HTTP_URL);
+    curl_setopt_array($ch, array(
+        CURLOPT_RETURNTRANSFER => true,
+        CURLOPT_NOBODY         => true,
+        CURLOPT_TIMEOUT        => 15,
+        CURLOPT_SSL_VERIFYPEER => (bool) $verify,
+        CURLOPT_SSL_VERIFYHOST => $verify ? 2 : 0,
+    ));
+    curl_exec($ch);
+    $curlError = curl_error($ch);
+    curl_close($ch);
+
+    if ($curlError === '') {
+        $checks[] = array('ok', 'SMS gateway ' . $host . ' reachable'
+            . ($verify ? ' with TLS verification on' : ' (TLS VERIFICATION IS OFF)'));
+        if (!$verify) {
+            $checks[] = array('warn', 'SMS_VERIFY_TLS is false - anyone on the network path can '
+                . 'impersonate the gateway and read every OTP. Point curl.cainfo at a CA bundle '
+                . 'in php.ini and set it back to true.');
+        }
+    } elseif ($verify && stripos($curlError, 'certificate') !== false) {
+        $checks[] = array('warn', 'Cannot verify the gateway certificate: ' . $curlError
+            . ' -- set curl.cainfo in php.ini to a cacert.pem, or as a last resort set '
+            . 'SMS_VERIFY_TLS to false in config.php.');
+    } else {
+        $checks[] = array('warn', 'Cannot reach the SMS gateway: ' . $curlError);
+    }
 }
 
 $checks[] = APP_DEBUG

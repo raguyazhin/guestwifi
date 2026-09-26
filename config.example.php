@@ -69,16 +69,27 @@ define('MOBILE_COUNTRY_CODE', '91');  // prefixed when handing the number to the
 // 'http'   -> generic HTTP gateway, see SMS_HTTP_* below
 // 'msg91'
 // 'twilio'
-define('SMS_DRIVER', 'log');
+define('SMS_DRIVER', 'http');
 
 define('SMS_SENDER_ID', 'SNALRT');
+// India's DLT rules: this exact wording must be registered against the
+// SNALRT header, or the gateway accepts the call and silently drops the
+// message. The network-alert template already registered for SNALRT does
+// not cover OTP text - register this one before go-live.
 define('SMS_TEMPLATE', 'Your {app} OTP is {otp}. Valid for {minutes} minutes. Do not share it with anyone.');
 
-// --- driver: http (suits most Indian gateways, incl. timesapi) ---
+// --- driver: http (timesapi, same call the network-alert app makes) ---
 define('SMS_HTTP_URL',    'https://sms.timesapi.in/api/v1/send');
 define('SMS_HTTP_METHOD', 'GET');     // GET or POST
 define('SMS_USERNAME',    'YOUR_SMS_USERNAME');
 define('SMS_PASSWORD',    'YOUR_SMS_PASSWORD');
+
+// The network-alert app sets CURLOPT_SSL_VERIFYPEER=false, which usually
+// means that server has no CA bundle configured (common on XAMPP/PHP 5.6).
+// Leave this true where it works - turning it off lets anyone on the path
+// impersonate the gateway and read every OTP in transit. install.php tests
+// it and tells you which way to set it.
+define('SMS_VERIFY_TLS', true);
 // Request parameters. {mobile} {message} {sender} {username} {password}
 // are substituted at send time. Rename keys to match your gateway's docs.
 define('SMS_HTTP_PARAMS', json_encode([
