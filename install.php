@@ -48,6 +48,23 @@ try {
     $errors[] = 'Schema: ' . $e->getMessage();
 }
 
+// Way back in when every administrator is locked out:
+//   php install.php --reset-admin=<username>
+if ($isCli && isset($argv[1]) && strpos($argv[1], '--reset-admin=') === 0) {
+    define('GW_ADMIN', true);
+    require_once dirname(__FILE__) . '/admin/auth.php';
+
+    $user = gw_user_by_name(substr($argv[1], strlen('--reset-admin=')));
+    if (!$user) {
+        echo "  [FAIL] No such user.\n";
+        exit(1);
+    }
+    $temp = gw_user_reset_password((int) $user['id']);
+    gw_audit('user.password_reset', $user['username'], 'From the server console');
+    echo '  User ' . $user['username'] . " is enabled and unlocked.\n  Temporary password: $temp\n";
+    exit(0);
+}
+
 /* --- server ------------------------------------------------------ */
 
 $checks[] = array('ok', 'PHP ' . PHP_VERSION . ' (needs ' . $GW_MIN_PHP . '+)');
@@ -139,8 +156,14 @@ if (FORTIGATE_MODE === 'none') {
     }
 }
 
-if (password_verify('admin123', ADMIN_PASS_HASH)) {
-    $checks[] = array('warn', 'The admin password is still the default "admin123" - change ADMIN_PASS_HASH');
+try {
+    foreach (db()->query('SELECT username, password_hash FROM admin_users WHERE active = 1')->fetchAll() as $row) {
+        if (password_verify('admin123', $row['password_hash'])) {
+            $checks[] = array('warn', 'User "' . $row['username'] . '" still has the default password "admin123"');
+        }
+    }
+} catch (Exception $e) {
+    $errors[] = 'Accounts: ' . $e->getMessage();
 }
 
 /* --- output ------------------------------------------------------- */

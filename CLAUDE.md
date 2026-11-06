@@ -18,6 +18,8 @@ See README.md for setup; this file records the non-obvious parts.
 ## Files
 - `portal.php` - all logic (OTP policy, SMS drivers, FortiGate handoff, cookies).
 - `api.php` - JSON API used by the page; CORS limited to `PORTAL_ALLOWED_ORIGINS`.
+- `admin.php` + `admin/` - the management console (see below). `portal.php` holds its schema
+  and first-account seed, nothing else.
 - `portal-standalone.html` - the guest page. Served from `/guestwifi/` by Apache as
   the FortiGate's external captive portal, so edits go live with no upload.
 - `storage/error.log` - first place to look when "could not send the OTP" or
@@ -91,6 +93,34 @@ See README.md for setup; this file records the non-obvious parts.
 - `gw_session_end()` only updates the portal DB. It does not log a device off the
   FortiGate, so Disconnect and block reach a device already online only at the
   firewall's auth timeout.
+
+## Management console
+- `admin.php` is the only entry point: sign-in, session and role checks, form actions, downloads,
+  page dispatch. `admin/` holds auth, data (queries and the report catalogue), actions, export, ui
+  and `pages/`. Everything in `admin/` exits unless `GW_ADMIN` is defined.
+- Accounts are rows in `admin_users`. `ADMIN_USER`/`ADMIN_PASS_HASH` are read once, by
+  `gw_admin_seed()`, when that table is empty. Lost every admin password:
+  `php install.php --reset-admin=<username>` on the server console.
+- Roles are Administrator, Operator, Viewer; `gw_can()` is the only place they are defined. Check
+  capability in the action too, not only by hiding the button (`gw_require_can()`).
+- `session_version` on the user is compared on every request, so a password change, reset or
+  disable signs that user out at once. The row is re-read per request for that reason.
+- Idle limit is 20 minutes on purpose: PHP's session cleanup runs at 24 and would cut a longer
+  one short. The 60-second auto-refresh sends `X-GW-Poll` so it does not extend the idle clock.
+- Only Administrators download reports (`reports.export`, enforced in `gw_export()`). Operators and
+  Viewers can preview them on screen.
+- Every action calls `gw_audit()`, as do sign-ins and report downloads. Add it to new actions.
+- A locked account never has its password checked, and locked, disabled and unknown users get
+  the same message and timing. Keep it that way, or the lock can be probed.
+- All reports go through `gw_report_rows()` (a generator), so preview, Excel, CSV and print match.
+  New report: an entry in `gw_reports()` and a `case` there. CSV cells pass `gw_csv_cell()`
+  because guest-supplied text reaches Excel; the xlsx uses text cells so MRD zeros survive.
+- Session length must use `gw_session_end_time()` / `gw_sql_session_minutes()`: `ended_at` is
+  stamped by the next request after expiry, which can be hours late, so it is capped at `expires_at`.
+- Charts are SVG drawn in `admin/ui.php`; there is no CDN, and the CSP forbids inline script, so
+  behaviour goes in `admin/assets/admin.js`. Series colours are the `--series-*` tokens only.
+- "Connected" means a live portal session. The console has no view of the firewall, so never word
+  anything as if a device is confirmed online, or as if Disconnect takes it offline.
 
 ## Conventions
 - Files use CRLF line endings; keep them (sed -i on Git Bash converts to LF).

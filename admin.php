@@ -1,457 +1,172 @@
 <?php
 /**
- * Admin dashboard: who is online, what was sent, blocked numbers and the
- * approved-number list. Credentials live in config.php (ADMIN_USER / ADMIN_PASS_HASH).
+ * Guest Wi-Fi management console. Every page goes through here: sign-in,
+ * session and role checks, form actions, report downloads, page dispatch.
  *
- * While SMS_DRIVER is 'log' the SMS table shows the full message including
- * the OTP, so the whole flow can be tested without a live gateway.
+ *   admin/auth.php     accounts, roles, sign-in, audit trail
+ *   admin/data.php     queries, dashboard figures, report definitions
+ *   admin/actions.php  everything a form can change
+ *   admin/export.php   Excel, CSV and print output
+ *   admin/ui.php       layout, components, charts
+ *   admin/pages/       one file per screen
  */
 
-require_once dirname(__FILE__) . '/portal.php';
+define('GW_ADMIN', true);
 
-$path   = gw_base_path();
-$secure = !empty($_SERVER['HTTPS']);
+$base = dirname(__FILE__);
+require_once $base . '/portal.php';
+require_once $base . '/admin/auth.php';
+require_once $base . '/admin/data.php';
+require_once $base . '/admin/ui.php';
+require_once $base . '/admin/actions.php';
+require_once $base . '/admin/export.php';
 
-if (PHP_VERSION_ID >= 70300) {
-    session_set_cookie_params(array(
-        'lifetime' => 0, 'path' => $path, 'secure' => $secure,
-        'httponly' => true, 'samesite' => 'Lax',
-    ));
-} else {
-    session_set_cookie_params(0, $path . '; samesite=Lax', '', $secure, true);
-}
-session_name('gw_admin');
-session_start();
+header('X-Frame-Options: DENY');
+header('X-Content-Type-Options: nosniff');
+header('Referrer-Policy: same-origin');
+header('Cache-Control: no-store');
+header("Content-Security-Policy: default-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self'; "
+    . "frame-ancestors 'none'; base-uri 'self'; form-action 'self'");
 
-$error  = '';
-$notice = '';
+gw_admin_session_start();
 
-function gw_pill($text, $kind)
+// page => file, capability needed, title
+$pages = array(
+    'dashboard' => array('dashboard.php', '', 'Dashboard'),
+    'devices'   => array('devices.php', '', 'Connected devices'),
+    'guests'    => array('guests.php', '', 'Guests'),
+    'guest'     => array('guest.php', '', 'Guest'),
+    'access'    => array('access.php', '', 'Access control'),
+    'logs'      => array('logs.php', '', 'Activity logs'),
+    'reports'   => array('reports.php', '', 'Reports'),
+    'users'     => array('users.php', 'users.manage', 'Users'),
+    'audit'     => array('audit.php', 'audit.view', 'Audit trail'),
+    'system'    => array('system.php', 'system.view', 'System'),
+    'account'   => array('account.php', '', 'My account'),
+);
+
+
+
+function gw_admin_redirect()
 {
-    return '<span class="pill pill-' . gw_e($kind) . '">' . gw_e($text) . '</span>';
-}
-
-function gw_block_notice($mobile, $closed)
-{
-    $notice = $mobile . ' blocked.';
-    if ($closed > 0) {
-        $notice .= ' It was online: the portal session is closed, but the firewall '
-            . 'keeps it online until its own authentication timeout.';
-    }
-    return $notice;
-}
-
-function gw_login_page($error)
-{
-    ?>
-    <!DOCTYPE html>
-    <html lang="en">
-    <head>
-    <meta charset="utf-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>Admin sign in</title>
-    <?php echo gw_page_css(); ?>
-    </head>
-    <body>
-    <div class="panel login">
-        <h1>Guest Wi-Fi admin</h1>
-        <?php if ($error !== ''): ?>
-            <div class="alert alert-error"><?php echo gw_e($error); ?></div>
-        <?php endif; ?>
-        <form method="post">
-            <input type="hidden" name="do" value="login">
-            <label for="u">Username</label>
-            <input id="u" name="username" type="text" autocomplete="username" required>
-            <label for="p">Password</label>
-            <input id="p" name="password" type="password" autocomplete="current-password" required>
-            <button class="btn" type="submit">Sign in</button>
-        </form>
-    </div>
-    </body>
-    </html>
-    <?php
-}
-
-/* --- auth -------------------------------------------------------- */
-
-$posted = isset($_POST['do']) ? $_POST['do'] : '';
-
-if ($posted === 'login') {
-    $user = isset($_POST['username']) ? (string) $_POST['username'] : '';
-    $pass = isset($_POST['password']) ? (string) $_POST['password'] : '';
-
-    // Constant-time on both fields so neither can be probed by timing.
-    if (hash_equals(ADMIN_USER, $user) && password_verify($pass, ADMIN_PASS_HASH)) {
-        session_regenerate_id(true);
-        $_SESSION['admin'] = true;
-        $_SESSION['csrf']  = bin2hex(random_bytes(16));
-        header('Location: admin.php');
-        exit;
-    }
-    $error = 'Incorrect username or password.';
-    usleep(400000);
-}
-
-if (isset($_GET['logout'])) {
-    $_SESSION = array();
-    session_destroy();
-    header('Location: admin.php');
+    $query = isset($_SERVER['QUERY_STRING']) ? $_SERVER['QUERY_STRING'] : '';
+    header('Location: admin.php' . ($query !== '' ? '?' . $query : ''));
     exit;
 }
 
-if (empty($_SESSION['admin'])) {
-    gw_login_page($error);
+function gw_admin_fatal($e)
+{
+    gw_log('error.log', 'Admin: ' . $e->getMessage());
+    http_response_code(500);
+    gw_ui_auth_start('Unavailable');
+    echo '<h1>Unavailable</h1><p class="muted">The console could not reach its database or finish the '
+        . 'request. Check that MySQL is running and that install.php has been run. '
+        . 'The detail is in storage/error.log.</p>';
+    gw_ui_auth_end();
     exit;
 }
-
-$csrf = isset($_SESSION['csrf']) ? (string) $_SESSION['csrf'] : '';
-
-/* --- actions ----------------------------------------------------- */
-
-if ($posted !== '' && $posted !== 'login') {
-    $token = isset($_POST['csrf']) ? (string) $_POST['csrf'] : '';
-
-    if (!hash_equals($csrf, $token)) {
-        $error = 'Session expired, please retry.';
-    } else {
-        try {
-            switch ($posted) {
-                case 'disconnect':
-                    gw_session_end((int) (isset($_POST['id']) ? $_POST['id'] : 0), 'admin');
-                    $notice = 'Device disconnected.';
-                    break;
-
-                case 'block_add':
-                    $mobile = gw_normalize_mobile(isset($_POST['mobile']) ? $_POST['mobile'] : '');
-                    if (!gw_valid_mobile($mobile)) {
-                        $error = 'Enter a valid 10-digit mobile number.';
-                        break;
-                    }
-                    $reason = mb_substr(trim(isset($_POST['reason']) ? $_POST['reason'] : ''), 0, 255);
-                    if ($reason === '') {
-                        $error = 'Enter a description for the block.';
-                        break;
-                    }
-                    $notice = gw_block_notice($mobile, gw_mobile_block($mobile, $reason));
-                    break;
-
-                case 'block_remove':
-                    gw_mobile_unblock(isset($_POST['id']) ? $_POST['id'] : 0);
-                    $notice = 'Number unblocked.';
-                    break;
-
-                case 'block_again':
-                    $row = gw_block_entry(isset($_POST['id']) ? $_POST['id'] : 0);
-                    if (!$row) {
-                        $error = 'That entry no longer exists.';
-                        break;
-                    }
-                    $notice = gw_block_notice($row['mobile'], gw_mobile_block($row['mobile'], $row['reason']));
-                    break;
-
-                case 'block_delete':
-                    gw_block_delete(isset($_POST['id']) ? $_POST['id'] : 0);
-                    $notice = 'Entry deleted. The number can request an OTP again.';
-                    break;
-
-                case 'allow_add':
-                    $mobile = gw_normalize_mobile(isset($_POST['mobile']) ? $_POST['mobile'] : '');
-                    if (!gw_valid_mobile($mobile)) {
-                        $error = 'Enter a valid 10-digit mobile number.';
-                        break;
-                    }
-                    $label = mb_substr(trim(isset($_POST['label']) ? $_POST['label'] : ''), 0, 100);
-                    $stmt  = db()->prepare(
-                        'INSERT INTO allowed_mobiles (mobile, label, enabled, created_at)
-                         VALUES (?, ?, 1, ?)
-                         ON DUPLICATE KEY UPDATE enabled = 1, label = VALUES(label)'
-                    );
-                    $stmt->execute(array($mobile, $label, gw_ts()));
-                    $notice = $mobile . ' added to the approved list.';
-                    break;
-
-                case 'allow_toggle':
-                    $stmt = db()->prepare('UPDATE allowed_mobiles SET enabled = 1 - enabled WHERE id = ?');
-                    $stmt->execute(array((int) (isset($_POST['id']) ? $_POST['id'] : 0)));
-                    $notice = 'Approved-number status changed.';
-                    break;
-
-                case 'allow_delete':
-                    $stmt = db()->prepare('DELETE FROM allowed_mobiles WHERE id = ?');
-                    $stmt->execute(array((int) (isset($_POST['id']) ? $_POST['id'] : 0)));
-                    $notice = 'Number removed.';
-                    break;
-            }
-        } catch (Exception $e) {
-            $error = 'Action failed: ' . $e->getMessage();
-        }
-    }
-}
-
-/* --- data -------------------------------------------------------- */
-
-$active = array();
-$otps = array();
-$history = array();
-$sms = array();
-$allowed = array();
-$blocked = array();
-$loginsToday = 0;
-$otpToday = 0;
-$failedToday = 0;
 
 try {
+    $posted = isset($_POST['do']) ? (string) $_POST['do'] : '';
+
+    /* --- sign-in --------------------------------------------------- */
+
+    if ($posted === 'login') {
+        $problem = gw_admin_login(
+            isset($_POST['username']) ? (string) $_POST['username'] : '',
+            isset($_POST['password']) ? (string) $_POST['password'] : ''
+        );
+        if ($problem === '') {
+            header('Location: admin.php');
+            exit;
+        }
+        gw_ui_login($problem, '');
+        exit;
+    }
+
+    $polling = isset($_SERVER['HTTP_X_GW_POLL']);
+    $me      = gw_admin_session_user(!$polling);
+
+    if (!$me) {
+        if ($polling) {
+            http_response_code(401);
+            exit;
+        }
+        if ($posted !== '' || isset($_GET['page'])) {
+            header('Location: admin.php?expired=1');
+            exit;
+        }
+        gw_ui_login('', isset($_GET['bye']) ? 'You have signed out.'
+            : (isset($_GET['expired']) ? 'Your session ended. Sign in to continue.' : ''));
+        exit;
+    }
+
+    /* --- form actions ---------------------------------------------- */
+
+    if ($posted !== '') {
+        if (!hash_equals(gw_csrf_token(), isset($_POST['csrf']) ? (string) $_POST['csrf'] : '')) {
+            gw_flash('error', 'Your session changed. Please try that again.');
+            gw_admin_redirect();
+        }
+
+        if ($posted === 'logout') {
+            gw_audit('auth.logout');
+            gw_admin_session_destroy();
+            header('Location: admin.php?bye=1');
+            exit;
+        }
+
+        // Until a temporary password is replaced, nothing else is allowed.
+        if ((int) $me['must_change_password'] === 1 && $posted !== 'password_change') {
+            gw_flash('error', 'Set a new password first.');
+            gw_admin_redirect();
+        }
+
+        try {
+            gw_admin_action($posted);
+        } catch (GwActionError $e) {
+            gw_flash('error', $e->getMessage());
+        }
+        gw_admin_redirect();
+    }
+
+    /* --- pages ----------------------------------------------------- */
+
     gw_expire_stale();
-    $today = gw_today();
 
-    $active = db()->query('SELECT * FROM guest_sessions WHERE active = 1 ORDER BY started_at DESC LIMIT 100')->fetchAll();
+    if ((int) $me['must_change_password'] === 1) {
+        require $base . '/admin/pages/password.php';
+        exit;
+    }
 
-    $stmt = db()->prepare('SELECT COUNT(*) FROM login_history WHERE success = 1 AND created_at >= ?');
-    $stmt->execute(array($today));
-    $loginsToday = (int) $stmt->fetchColumn();
+    $page = isset($_GET['page']) ? (string) $_GET['page'] : 'dashboard';
 
-    $stmt = db()->prepare('SELECT COUNT(*) FROM otp_requests WHERE created_at >= ?');
-    $stmt->execute(array($today));
-    $otpToday = (int) $stmt->fetchColumn();
+    if ($page === 'export') {
+        gw_export(
+            isset($_GET['report']) ? (string) $_GET['report'] : '',
+            isset($_GET['format']) ? (string) $_GET['format'] : ''
+        );
+        $page = 'reports';
+    }
 
-    $stmt = db()->prepare('SELECT COUNT(*) FROM login_history WHERE success = 0 AND created_at >= ?');
-    $stmt->execute(array($today));
-    $failedToday = (int) $stmt->fetchColumn();
+    if (!isset($pages[$page])) {
+        $page = 'dashboard';
+    }
 
-    $otps    = db()->query('SELECT * FROM otp_requests ORDER BY id DESC LIMIT 25')->fetchAll();
-    $history = db()->query('SELECT * FROM login_history ORDER BY id DESC LIMIT 25')->fetchAll();
-    $sms     = db()->query('SELECT * FROM sms_log ORDER BY id DESC LIMIT 20')->fetchAll();
-    $allowed = db()->query('SELECT * FROM allowed_mobiles ORDER BY mobile')->fetchAll();
-    $blocked = db()->query('SELECT * FROM blocked_mobiles ORDER BY active DESC, blocked_at DESC LIMIT 200')->fetchAll();
+    $partial = isset($_GET['partial']) && $polling;
+    $allowed = $pages[$page][1] === '' || gw_can($pages[$page][1]);
 
+    if (!$partial) {
+        gw_ui_start($pages[$page][2], $page === 'guest' ? 'guests' : $page);
+    }
+    if ($allowed) {
+        require $base . '/admin/pages/' . $pages[$page][0];
+    } else {
+        gw_ui_title('Not available', 'Your role does not include this page.');
+    }
+    if (!$partial) {
+        gw_ui_end();
+    }
 } catch (Exception $e) {
-    $error = 'Database not ready. Run install.php first. (' . $e->getMessage() . ')';
+    gw_admin_fatal($e);
 }
-?>
-<!DOCTYPE html>
-<html lang="en">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Guest Wi-Fi admin</title>
-<?php echo gw_page_css(); ?>
-</head>
-<body>
-<div class="shell">
-
-    <div class="top">
-        <h1>Guest Wi-Fi &middot; <?php echo gw_e(APP_ORG); ?></h1>
-        <div class="actions" style="margin:0">
-            <a class="btn btn-ghost" href="portal-standalone.html">Portal</a>
-            <a class="btn btn-ghost" href="admin.php">Refresh</a>
-            <a class="btn btn-ghost" href="admin.php?logout=1">Sign out</a>
-        </div>
-    </div>
-
-    <?php if ($error !== ''): ?><div class="alert alert-error"><?php echo gw_e($error); ?></div><?php endif; ?>
-    <?php if ($notice !== ''): ?><div class="alert alert-ok"><?php echo gw_e($notice); ?></div><?php endif; ?>
-
-    <div class="stats">
-        <div class="stat"><b><?php echo count($active); ?></b><span>Devices online</span></div>
-        <div class="stat"><b><?php echo $loginsToday; ?></b><span>Logins today</span></div>
-        <div class="stat"><b><?php echo $otpToday; ?></b><span>OTPs sent today</span></div>
-        <div class="stat"><b><?php echo $failedToday; ?></b><span>Rejected today</span></div>
-    </div>
-
-    <div class="tbl">
-        <h2>Connected devices</h2>
-        <table>
-            <thead><tr><th>Mobile</th><th>MRD No</th><th>Device</th><th>IP</th><th>Started</th><th>Expires</th><th></th></tr></thead>
-            <tbody>
-            <?php if (!$active): ?><tr><td colspan="7" class="muted">Nobody is connected right now.</td></tr><?php endif; ?>
-            <?php foreach ($active as $row): ?>
-                <tr>
-                    <td><?php echo gw_e($row['mobile']); ?></td>
-                    <td><?php echo gw_e($row['mrd_no']); ?></td>
-                    <td><code><?php echo gw_e($row['mac_address'] ? $row['mac_address'] : $row['device_id']); ?></code></td>
-                    <td><?php echo gw_e($row['ip_address']); ?></td>
-                    <td><?php echo gw_e($row['started_at']); ?></td>
-                    <td><?php echo gw_e($row['expires_at']); ?></td>
-                    <td>
-                        <form method="post" style="margin:0">
-                            <input type="hidden" name="csrf" value="<?php echo gw_e($csrf); ?>">
-                            <input type="hidden" name="do" value="disconnect">
-                            <input type="hidden" name="id" value="<?php echo (int) $row['id']; ?>">
-                            <button class="btn-link" type="submit">Disconnect</button>
-                        </form>
-                    </td>
-                </tr>
-            <?php endforeach; ?>
-            </tbody>
-        </table>
-    </div>
-
-    <div class="tbl">
-        <h2>Blocked numbers</h2>
-
-        <form method="post" class="form">
-            <input type="hidden" name="csrf" value="<?php echo gw_e($csrf); ?>">
-            <input type="hidden" name="do" value="block_add">
-            <input name="mobile" type="tel" inputmode="numeric" maxlength="10" placeholder="10-digit mobile" required>
-            <input name="reason" type="text" maxlength="255" placeholder="Description (why it is blocked)" style="flex:1;min-width:240px" required>
-            <button class="btn" type="submit">Block</button>
-        </form>
-
-        <table>
-            <thead><tr><th>Mobile</th><th>Description</th><th>Status</th><th>Blocked</th><th>Unblocked</th><th></th></tr></thead>
-            <tbody>
-            <?php if (!$blocked): ?><tr><td colspan="6" class="muted">No numbers have been blocked.</td></tr><?php endif; ?>
-            <?php foreach ($blocked as $row): ?>
-                <tr>
-                    <td><?php echo gw_e($row['mobile']); ?></td>
-                    <td style="white-space:normal;max-width:430px"><?php echo gw_e($row['reason']); ?></td>
-                    <td><?php echo ((int) $row['active'] === 1) ? gw_pill('blocked', 'error') : gw_pill('unblocked', 'off'); ?></td>
-                    <td><?php echo gw_e($row['blocked_at']); ?></td>
-                    <td><?php echo gw_e($row['unblocked_at']); ?></td>
-                    <td>
-                        <form method="post" style="margin:0;display:inline">
-                            <input type="hidden" name="csrf" value="<?php echo gw_e($csrf); ?>">
-                            <input type="hidden" name="do" value="<?php echo ((int) $row['active'] === 1) ? 'block_remove' : 'block_again'; ?>">
-                            <input type="hidden" name="id" value="<?php echo (int) $row['id']; ?>">
-                            <button class="btn-link" type="submit"><?php echo ((int) $row['active'] === 1) ? 'Unblock' : 'Block again'; ?></button>
-                        </form>
-                        <form method="post" style="margin:0;display:inline" onsubmit="return confirm('Delete this entry and its description? The number will be able to request an OTP.');">
-                            <input type="hidden" name="csrf" value="<?php echo gw_e($csrf); ?>">
-                            <input type="hidden" name="do" value="block_delete">
-                            <input type="hidden" name="id" value="<?php echo (int) $row['id']; ?>">
-                            <button class="btn-link" type="submit">Delete</button>
-                        </form>
-                    </td>
-                </tr>
-            <?php endforeach; ?>
-            </tbody>
-        </table>
-    </div>
-
-    <div class="tbl">
-        <h2>Recent OTP requests</h2>
-        <table>
-            <thead><tr><th>Time</th><th>Mobile</th><th>MRD No</th><th>Device</th><th>Status</th><th>Tries</th><th>Expires</th></tr></thead>
-            <tbody>
-            <?php if (!$otps): ?><tr><td colspan="7" class="muted">No OTP requests yet.</td></tr><?php endif; ?>
-            <?php foreach ($otps as $row): ?>
-                <tr>
-                    <td><?php echo gw_e($row['created_at']); ?></td>
-                    <td><?php echo gw_e($row['mobile']); ?></td>
-                    <td><?php echo gw_e($row['mrd_no']); ?></td>
-                    <td><code><?php echo gw_e(mb_substr((string) $row['device_id'], 0, 24)); ?></code></td>
-                    <td><?php
-                        $status = (string) $row['status'];
-                        switch ($status) {
-                            case 'verified':    $kind = 'ok'; break;
-                            case 'pending':     $kind = 'warn'; break;
-                            case 'locked':
-                            case 'blocked':
-                            case 'send_failed': $kind = 'error'; break;
-                            default:            $kind = 'off';
-                        }
-                        echo gw_pill($status, $kind);
-                    ?></td>
-                    <td><?php echo (int) $row['attempts']; ?></td>
-                    <td><?php echo gw_e($row['expires_at']); ?></td>
-                </tr>
-            <?php endforeach; ?>
-            </tbody>
-        </table>
-    </div>
-
-    <div class="tbl">
-        <h2>Login attempts</h2>
-        <table>
-            <thead><tr><th>Time</th><th>Mobile</th><th>Result</th><th>Reason</th><th>IP</th></tr></thead>
-            <tbody>
-            <?php if (!$history): ?><tr><td colspan="5" class="muted">Nothing logged yet.</td></tr><?php endif; ?>
-            <?php foreach ($history as $row): ?>
-                <tr>
-                    <td><?php echo gw_e($row['created_at']); ?></td>
-                    <td><?php echo gw_e($row['mobile']); ?></td>
-                    <td><?php echo ((int) $row['success'] === 1) ? gw_pill('allowed', 'ok') : gw_pill('rejected', 'error'); ?></td>
-                    <td><?php echo gw_e($row['reason']); ?></td>
-                    <td><?php echo gw_e($row['ip_address']); ?></td>
-                </tr>
-            <?php endforeach; ?>
-            </tbody>
-        </table>
-    </div>
-
-    <div class="tbl">
-        <h2>SMS gateway log
-            <?php if (SMS_DRIVER === 'log'): ?>
-                <?php echo gw_pill('test mode - nothing is actually sent', 'warn'); ?>
-            <?php endif; ?>
-        </h2>
-        <table>
-            <thead><tr><th>Time</th><th>Mobile</th><th>Driver</th><th>Result</th><th>Message / response</th></tr></thead>
-            <tbody>
-            <?php if (!$sms): ?><tr><td colspan="5" class="muted">No messages sent yet.</td></tr><?php endif; ?>
-            <?php foreach ($sms as $row): ?>
-                <tr>
-                    <td><?php echo gw_e($row['created_at']); ?></td>
-                    <td><?php echo gw_e($row['mobile']); ?></td>
-                    <td><?php echo gw_e($row['driver']); ?></td>
-                    <td><?php echo ((int) $row['ok'] === 1) ? gw_pill('sent', 'ok') : gw_pill('failed', 'error'); ?></td>
-                    <td style="white-space:normal;max-width:430px">
-                        <?php echo gw_e($row['message']); ?>
-                        <?php if (trim((string) $row['response']) !== ''): ?>
-                            <br><span class="muted"><?php echo gw_e(mb_substr((string) $row['response'], 0, 160)); ?></span>
-                        <?php endif; ?>
-                    </td>
-                </tr>
-            <?php endforeach; ?>
-            </tbody>
-        </table>
-    </div>
-
-    <div class="tbl">
-        <h2>Approved numbers
-            <?php echo REQUIRE_ALLOWED_LIST
-                ? gw_pill('enforced', 'ok')
-                : gw_pill('not enforced - portal is open to any number', 'off'); ?>
-        </h2>
-
-        <form method="post" class="form">
-            <input type="hidden" name="csrf" value="<?php echo gw_e($csrf); ?>">
-            <input type="hidden" name="do" value="allow_add">
-            <input name="mobile" type="tel" inputmode="numeric" maxlength="10" placeholder="10-digit mobile" required>
-            <input name="label" type="text" maxlength="100" placeholder="Name / department (optional)">
-            <button class="btn" type="submit">Add</button>
-        </form>
-
-        <table>
-            <thead><tr><th>Mobile</th><th>Label</th><th>Status</th><th>Added</th><th></th></tr></thead>
-            <tbody>
-            <?php if (!$allowed): ?><tr><td colspan="5" class="muted">No numbers on the list.</td></tr><?php endif; ?>
-            <?php foreach ($allowed as $row): ?>
-                <tr>
-                    <td><?php echo gw_e($row['mobile']); ?></td>
-                    <td><?php echo gw_e($row['label']); ?></td>
-                    <td><?php echo ((int) $row['enabled'] === 1) ? gw_pill('enabled', 'ok') : gw_pill('disabled', 'off'); ?></td>
-                    <td><?php echo gw_e($row['created_at']); ?></td>
-                    <td>
-                        <form method="post" style="margin:0;display:inline">
-                            <input type="hidden" name="csrf" value="<?php echo gw_e($csrf); ?>">
-                            <input type="hidden" name="do" value="allow_toggle">
-                            <input type="hidden" name="id" value="<?php echo (int) $row['id']; ?>">
-                            <button class="btn-link" type="submit"><?php echo ((int) $row['enabled'] === 1) ? 'Disable' : 'Enable'; ?></button>
-                        </form>
-                        <form method="post" style="margin:0;display:inline">
-                            <input type="hidden" name="csrf" value="<?php echo gw_e($csrf); ?>">
-                            <input type="hidden" name="do" value="allow_delete">
-                            <input type="hidden" name="id" value="<?php echo (int) $row['id']; ?>">
-                            <button class="btn-link" type="submit">Remove</button>
-                        </form>
-                    </td>
-                </tr>
-            <?php endforeach; ?>
-            </tbody>
-        </table>
-    </div>
-
-</div>
-</body>
-</html>

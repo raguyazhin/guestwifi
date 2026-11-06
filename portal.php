@@ -2,8 +2,9 @@
 /**
  * Guest Wi-Fi OTP portal - all application logic.
  *
- * Included by api.php, install.php and admin.php. Defines functions only;
- * requesting this file directly produces nothing.
+ * Included by api.php, install.php and admin.php (the dashboard's own code
+ * is in admin/). Defines functions only; requesting this file directly
+ * produces nothing.
  *
  * Written for PHP 5.6 (no ??, no type declarations, no match) so it runs on
  * the deployment server, and unchanged on PHP 7 and 8.
@@ -410,6 +411,16 @@ function gw_column_exists(PDO $pdo, $table, $column)
     return (int) $stmt->fetchColumn() > 0;
 }
 
+function gw_index_exists(PDO $pdo, $table, $index)
+{
+    $stmt = $pdo->prepare(
+        'SELECT COUNT(*) FROM information_schema.STATISTICS
+          WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ? AND INDEX_NAME = ?'
+    );
+    $stmt->execute(array(DB_NAME, $table, $index));
+    return (int) $stmt->fetchColumn() > 0;
+}
+
 /**
  * Creates the database and tables if absent. Safe to run repeatedly.
  * Returns a list of what happened, for install.php to display.
@@ -519,7 +530,46 @@ function gw_install_schema()
                 http_code  INT DEFAULT NULL,
                 response   TEXT,
                 created_at DATETIME NOT NULL,
-                KEY idx_mobile (mobile, created_at)
+                KEY idx_mobile (mobile, created_at),
+                KEY idx_created (created_at)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4",
+
+        // Dashboard accounts. session_version is bumped on a password change
+        // or reset, which signs that user out everywhere.
+        'admin_users' => "
+            CREATE TABLE IF NOT EXISTS admin_users (
+                id                   INT AUTO_INCREMENT PRIMARY KEY,
+                username             VARCHAR(32) NOT NULL UNIQUE,
+                full_name            VARCHAR(100) NOT NULL,
+                email                VARCHAR(190) DEFAULT NULL,
+                role                 VARCHAR(16) NOT NULL DEFAULT 'viewer',
+                active               TINYINT(1) NOT NULL DEFAULT 1,
+                password_hash        VARCHAR(255) NOT NULL,
+                must_change_password TINYINT(1) NOT NULL DEFAULT 1,
+                session_version      INT NOT NULL DEFAULT 1,
+                failed_logins        TINYINT UNSIGNED NOT NULL DEFAULT 0,
+                locked_until         DATETIME DEFAULT NULL,
+                last_login_at        DATETIME DEFAULT NULL,
+                last_login_ip        VARCHAR(45) DEFAULT NULL,
+                password_changed_at  DATETIME DEFAULT NULL,
+                created_by           VARCHAR(32) DEFAULT NULL,
+                created_at           DATETIME NOT NULL
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4",
+
+        // Who did what in the dashboard. username is a copy, not a foreign
+        // key, so the record stands on its own.
+        'admin_audit' => "
+            CREATE TABLE IF NOT EXISTS admin_audit (
+                id         BIGINT AUTO_INCREMENT PRIMARY KEY,
+                user_id    INT DEFAULT NULL,
+                username   VARCHAR(32) DEFAULT NULL,
+                action     VARCHAR(40) NOT NULL,
+                target     VARCHAR(100) DEFAULT NULL,
+                detail     VARCHAR(255) DEFAULT NULL,
+                ip_address VARCHAR(45) DEFAULT NULL,
+                created_at DATETIME NOT NULL,
+                KEY idx_created (created_at),
+                KEY idx_action_ip (action, ip_address, created_at)
             ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4",
     );
 
@@ -537,7 +587,55 @@ function gw_install_schema()
         }
     }
 
+    // Indexes the dashboard and reports lean on.
+    $indexes = array(
+        array('guest_sessions', 'idx_started', 'started_at'),
+        array('sms_log', 'idx_created', 'created_at'),
+    );
+    foreach ($indexes as $index) {
+        if (!gw_index_exists($pdo, $index[0], $index[1])) {
+            $pdo->exec("ALTER TABLE {$index[0]} ADD KEY {$index[1]} ({$index[2]})");
+            $done[] = "index `{$index[0]}.{$index[1]}` added";
+        }
+    }
+
+    $seeded = gw_admin_seed($pdo);
+    if ($seeded !== '') {
+        $done[] = $seeded;
+    }
+
     return $done;
+}
+
+/**
+ * First dashboard account, once only. It keeps the password already in
+ * config.php so nobody is locked out by the upgrade, and has to change it at
+ * first sign-in. ADMIN_USER and ADMIN_PASS_HASH are not read after this.
+ */
+function gw_admin_seed(PDO $pdo)
+{
+    if ((int) $pdo->query('SELECT COUNT(*) FROM admin_users')->fetchColumn() > 0) {
+        return '';
+    }
+
+    $username = defined('ADMIN_USER') ? strtolower(ADMIN_USER) : 'admin';
+    $plain    = '';
+    if (defined('ADMIN_PASS_HASH') && ADMIN_PASS_HASH !== '') {
+        $hash = ADMIN_PASS_HASH;
+    } else {
+        $plain = gw_random_token(8);
+        $hash  = password_hash($plain, PASSWORD_DEFAULT);
+    }
+
+    $stmt = $pdo->prepare(
+        "INSERT INTO admin_users (username, full_name, role, password_hash, must_change_password,
+                                  created_by, created_at)
+         VALUES (?, 'Administrator', 'admin', ?, 1, 'install', ?)"
+    );
+    $stmt->execute(array($username, $hash, gw_ts()));
+
+    return "administrator `$username` created"
+        . ($plain === '' ? ' from config.php' : " with temporary password $plain");
 }
 
 /**
@@ -1569,14 +1667,12 @@ function gw_otp_verify($mobile, $otp, $deviceId)
 }
 
 /* ================================================================== */
-/* 9. Shared styling for install.php and admin.php                     */
+/* 9. Styling for install.php                                          */
 /* ================================================================== */
 
 /**
- * The guest portal carries its own inlined CSS (it has to be a single
- * file for the firewall), so this only dresses the two admin pages.
- * Kept here rather than in a stylesheet to keep the deployment to a
- * handful of files.
+ * The guest portal carries its own inlined CSS and the dashboard has
+ * admin/assets/admin.css, so this only dresses the installer.
  */
 function gw_page_css()
 {
@@ -1589,10 +1685,7 @@ body{margin:0;padding:26px 16px;font-family:"Segoe UI",Roboto,Arial,sans-serif;b
 color:var(--text);line-height:1.5}
 .panel{max-width:820px;margin:0 auto;background:var(--surface);border-radius:14px;
 box-shadow:var(--shadow);padding:24px 26px 28px}
-.shell{max-width:1120px;margin:0 auto}
 h1{margin:0 0 4px;font-size:1.3rem}h2{font-size:1rem;margin:22px 0 10px}
-.top{display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:12px;margin-bottom:18px}
-.top h1{margin:0}
 .alert{padding:11px 14px;border-radius:10px;font-size:.88rem;margin-bottom:16px;border:1px solid transparent}
 .alert-ok{background:var(--okbg);color:var(--ok);border-color:#bfe6cf}
 .alert-warn{background:var(--warnbg);color:var(--warn);border-color:#f0dcb4}
@@ -1608,32 +1701,7 @@ color:#fff;font-size:.95rem;font-weight:600;font-family:inherit;cursor:pointer;t
 .btn:hover{background:var(--dark)}
 .btn-ghost{background:transparent;color:var(--dark);border:1.5px solid var(--border)}
 .btn-ghost:hover{background:#f2f9fd}
-.btn-link{background:0 0;border:0;color:var(--dark);font:inherit;font-size:.84rem;
-cursor:pointer;padding:3px;text-decoration:underline}
 .actions{display:flex;gap:10px;flex-wrap:wrap;margin-top:22px}
-.stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:12px;margin-bottom:20px}
-.stat{background:var(--surface);border-radius:12px;padding:15px 18px;box-shadow:var(--shadow)}
-.stat b{display:block;font-size:1.7rem;color:var(--ink)}
-.stat span{font-size:.75rem;color:var(--muted);text-transform:uppercase;letter-spacing:.5px}
-.tbl{background:var(--surface);border-radius:12px;box-shadow:var(--shadow);overflow-x:auto;margin-bottom:24px}
-.tbl h2{margin:0;padding:15px 18px 11px;font-size:.97rem;border-bottom:1px solid var(--border)}
-table{width:100%;border-collapse:collapse;font-size:.83rem}
-th,td{text-align:left;padding:10px 14px;border-bottom:1px solid var(--border);white-space:nowrap}
-th{color:var(--muted);font-weight:600;font-size:.74rem;text-transform:uppercase;letter-spacing:.4px}
-tbody tr:last-child td{border-bottom:0}
-tbody tr:hover{background:#f7fbfe}
-.pill{display:inline-block;padding:2px 9px;border-radius:999px;font-size:.72rem;font-weight:600}
-.pill-ok{background:var(--okbg);color:var(--ok)}
-.pill-off{background:#eef1f4;color:var(--muted)}
-.pill-error{background:var(--errbg);color:var(--err)}
-.pill-warn{background:var(--warnbg);color:var(--warn)}
-.form{display:flex;gap:8px;flex-wrap:wrap;align-items:center;padding:14px 18px}
-input[type=text],input[type=tel],input[type=password]{border:1.5px solid var(--border);
-border-radius:8px;padding:10px 12px;font-size:.92rem;font-family:inherit}
-input:focus{outline:0;border-color:var(--brand);box-shadow:0 0 0 3px rgba(0,149,217,.16)}
-label{display:block;font-size:.8rem;font-weight:600;color:var(--muted);margin:12px 0 6px}
-.login{max-width:350px;margin:9vh auto 0}
-.login input{width:100%}.login .btn{width:100%;margin-top:16px}
 .muted{color:var(--muted);font-size:.83rem}
 code{background:#eef4f8;padding:1px 6px;border-radius:5px;font-size:.86em}
 </style>';

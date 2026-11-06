@@ -26,7 +26,8 @@ portal.php               all the logic - compat, database, OTP policy, sessions,
 config.php               every setting (not in git - holds the secrets)
 config.example.php       template: copy to config.php
 install.php              creates the database, audits the server and config
-admin.php                dashboard: who is online, OTP log, SMS gateway replies
+admin.php                management console entry point (sign-in, roles, routing)
+admin/                   console code: pages, reports, charts, accounts, audit trail
 storage/                 sms.log, error.log, security.log (created at runtime)
 ```
 
@@ -39,7 +40,7 @@ Everything on the server side lives in `htdocs\guestwifi`. Only
 
 1. Put this folder at `C:\xampp\htdocs\guestwifi`.
 2. Copy `config.example.php` to `config.php`, then set `APP_SECRET` and
-   `ADMIN_PASS_HASH`:
+   `ADMIN_PASS_HASH` (used only to create the first console account):
    ```
    php -r "echo bin2hex(random_bytes(32));"
    php -r "echo password_hash('your-admin-password', PASSWORD_DEFAULT);"
@@ -48,18 +49,20 @@ Everything on the server side lives in `htdocs\guestwifi`. Only
 4. Open <http://localhost/guestwifi/install.php> — it creates the database and
    reports anything unsafe.
 5. Open <http://localhost/guestwifi/portal-standalone.html>.
+6. Sign in at <http://localhost/guestwifi/admin.php> with `ADMIN_USER` and the
+   password from step 2. You must set a new password straight away; after that,
+   create everyone else's accounts under **Users**.
 
 ### Testing without an SMS gateway
 
 `SMS_DRIVER` ships as `log`: no SMS is sent and nothing is charged. The message
 that *would* have gone out is written to `storage/sms.log` and shown in full —
-OTP included — in the **SMS gateway log** on <http://localhost/guestwifi/admin.php>
-(default login `admin` / `admin123`).
+OTP included — under **Activity logs > SMS gateway** in the management console.
 
 | Step | What to do |
 |------|------------|
 | 1 | Open the portal, accept the terms, enter any number starting 6–9 |
-| 2 | Open `admin.php` in a second tab and read the OTP from the SMS log |
+| 2 | Open the console in a second tab and read the OTP from the SMS log |
 | 3 | Type it into the portal — you reach the "connected" screen |
 | 4 | Try that same OTP in a **different browser** — it is rejected |
 
@@ -260,10 +263,10 @@ this code needs to change for it.
 
 - [ ] `APP_DEBUG` → `false`
 - [ ] `APP_SECRET` → a fresh random value (changing it later logs everyone out)
-- [ ] `ADMIN_PASS_HASH` → a new password
+- [ ] Sign in to the console, change the first password, and create named accounts
 - [ ] `SMS_DRIVER` → your real gateway, and send one live test
 - [ ] `FORTIGATE_MODE` → `form_post`, with `FORTIGATE_ALLOWED_HOSTS` set
-- [ ] Delete `install.php` from the server
+- [ ] Delete `install.php` from the server (keep a copy: `php install.php --reset-admin=<username>` is the way back in if every administrator is locked out)
 - [ ] Give the portal server a fixed IP — the firewall config hardcodes it
 - [ ] Put the portal behind HTTPS, or accept that the OTP travels in clear text
       on the guest VLAN
