@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<!-- Guest Wi-Fi portal page v1.4 (2026-09-26). Bump the version in the footer too. -->
+<!-- Guest Wi-Fi portal page v1.8 (2026-10-06). Bump the version in the footer too. -->
 <html lang="en">
 <head>
 <meta charset="utf-8">
@@ -32,10 +32,24 @@
 -->
 
 <script>
-    /* >>> EDIT THIS: full URL of api.php on the XAMPP server. Use the IP
-           address, not a hostname - DNS is usually blocked before a guest
-           signs in. Only used when this page runs on the firewall. */
-    window.GW_PORTAL_SERVER = 'https://192.168.20.3/guestwifi/api.php';
+    /* >>> EDIT THIS: address and path of api.php on the XAMPP server, with
+           no scheme. Use the IP address, not a hostname - DNS is usually
+           blocked before a guest signs in. Only used when this page runs
+           on the firewall.
+
+       The scheme follows the page's own: an http page (FortiGate port
+       1000) calls the API over http, an https page over https. Guest
+       devices do not trust the server's certificate (self-signed or
+       internal CA), and a rejected certificate fails silently as "Cannot
+       reach the sign-in server" - so https is only used when the page
+       itself is https, where browsers would block http as mixed content. */
+    window.GW_PORTAL_SERVER = location.protocol + '//192.168.20.3/guestwifi/api.php';
+
+    /* Any plain-http address outside the network. Opening the page on the
+       firewall without its sign-in token (e.g. typing the firewall address)
+       cannot get a guest online, so the page goes here once to let the
+       firewall intercept it and redirect back with a fresh token. */
+    window.GW_RESTART_URL = 'http://neverssl.com/';
 
     /* Served from the guestwifi folder means XAMPP is hosting us, so the
        API sits right next to this file. Anywhere else means the firewall
@@ -271,7 +285,7 @@ font-size:.88rem;border-bottom:1px solid var(--border)}
         <footer class="card-footer">
             Powered by Sankara Nethralaya &middot; Chennai<br>
             Need help? Contact the reception desk.<br>
-            <span id="page-ver">Page v1.4 &middot; 2026-09-26</span>
+            <span id="page-ver">Page v1.8 &middot; 2026-10-06</span>
         </footer>
     </section>
 </main>
@@ -315,6 +329,16 @@ font-size:.88rem;border-bottom:1px solid var(--border)}
         if (typeof s !== 'string' || s.length !== 32) { return false; }
         for (var i = 0; i < s.length; i++) {
             if ('0123456789abcdef'.indexOf(s.charAt(i)) === -1) { return false; }
+        }
+        return true;
+    }
+
+    // Same rule the server applies: 1-64 letters or digits.
+    function isMagic(s) {
+        if (typeof s !== 'string' || s.length < 1 || s.length > 64) { return false; }
+        var ok = '0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ';
+        for (var i = 0; i < s.length; i++) {
+            if (ok.indexOf(s.charAt(i)) === -1) { return false; }
         }
         return true;
     }
@@ -378,11 +402,15 @@ font-size:.88rem;border-bottom:1px solid var(--border)}
         var out = {}, query = window.location.search;
         if (query.charAt(0) === '?') { query = query.substring(1); }
 
+        // FortiOS redirects to /fgtauth?0a0b0c0d... - the token is the whole
+        // query string, with no "magic=" in front of it.
+        if (isMagic(query)) { out.magic = query; }
+
         query.split('&').forEach(function (pair) {
             if (!pair) { return; }
             var bits = pair.split('=');
             var k = decodeURIComponent(bits[0] || '').trim();
-            if (k && k !== 'action') {
+            if (k && k !== 'action' && bits.length > 1) {
                 out[k] = decodeURIComponent((bits[1] || '').split('+').join(' '));
             }
         });
@@ -394,7 +422,14 @@ font-size:.88rem;border-bottom:1px solid var(--border)}
         var magic = tag('fgt-magic');
         var redir = tag('fgt-redir');
 
-        if (post && !unfilled(post)) { out.post = post; }
+        if (post && !unfilled(post)) {
+            out.post = post;
+        } else if (API !== 'api.php') {
+            // Served by the firewall but its post tag was not filled in: post
+            // the login back to the address that served this page (port 1000),
+            // as the firewall's own login page does - never to the admin GUI.
+            out.post = window.location.protocol + '//' + window.location.host + '/';
+        }
         if (magic) { out.magic = magic; }
         if (redir) { out['4Tredir'] = redir; }
 
@@ -543,6 +578,18 @@ font-size:.88rem;border-bottom:1px solid var(--border)}
         el('fgt-user').value = f.username || '';
         el('fgt-pass').value = f.password || '';
 
+        // If the firewall rejects the login it serves this page again, and a
+        // verified device would hand off again at once - an endless loop.
+        // Allow one automatic attempt per minute; after that, say so.
+        var last = 0;
+        try { last = parseInt(sessionStorage.getItem('gw_handoff_at'), 10) || 0; } catch (e) {}
+        if (Date.now() - last < 60000) {
+            setAlert('The firewall did not accept the sign-in. Please tell the ' +
+                     'reception desk (firewall login rejected).', 'error');
+            return;
+        }
+        try { sessionStorage.setItem('gw_handoff_at', String(Date.now())); } catch (e) {}
+
         setTimeout(function () { form.submit(); }, 700);
     }
 
@@ -578,8 +625,8 @@ font-size:.88rem;border-bottom:1px solid var(--border)}
             }
 
             if (res.code === 'already_connected') {
-                showConnected(res.session, null);
                 setAlert(res.message, 'info');
+                showConnected(res.session, res.handoff || null);
                 return;
             }
 
@@ -679,6 +726,40 @@ font-size:.88rem;border-bottom:1px solid var(--border)}
     });
 
     /* ---- boot -------------------------------------------------------- */
+    // Served by the firewall but without its sign-in token: an OTP verified
+    // here could never open the firewall session. Restart the captive-portal
+    // redirect once to get a fresh token; if that already failed within the
+    // last minute, say so instead of looping.
+    var onFirewall = API !== 'api.php';
+    if (onFirewall && !portalParams.magic) {
+        var lastTry = 0;
+        try { lastTry = parseInt(sessionStorage.getItem('gw_restart_at'), 10) || 0; } catch (e) {}
+
+        if (window.GW_RESTART_URL && Date.now() - lastTry > 60000) {
+            try { sessionStorage.setItem('gw_restart_at', String(Date.now())); } catch (e) {}
+            setAlert('Starting Wi-Fi sign-in...', 'info');
+            window.location.replace(window.GW_RESTART_URL);
+            return;
+        }
+
+        // What the firewall actually gave us, for the reception desk / log.
+        // Lengths only - never the values themselves.
+        var rawTag = el('fgt-magic') ? (el('fgt-magic').value || '') : '';
+        var diag = {
+            path: window.location.pathname,
+            query_len: String(window.location.search.length),
+            tag: rawTag === '' ? 'blank' : (unfilled(rawTag) ? 'unfilled' : 'invalid-' + rawTag.length),
+            form: unfilled(ui.handoff.getAttribute('action') || '') ? 'unfilled' : 'filled'
+        };
+        api('diag', diag);
+
+        setAlert('Wi-Fi sign-in could not start. Close this page, then open any ' +
+                 'website (for example http://neverssl.com) to sign in again. ' +
+                 '[' + diag.path + ' q' + diag.query_len + ' ' + diag.tag + ']', 'warn');
+        ui.btnAgree.disabled = true;
+        return;
+    }
+
     api('init', {}).then(function (res) {
         if (!res.success) {
             setAlert(res.message, res.code === 'setup_required' ? 'warn' : 'error');
@@ -702,8 +783,8 @@ font-size:.88rem;border-bottom:1px solid var(--border)}
         }
 
         if (res.connected && res.session) {
-            showConnected(res.session, null);
             setAlert('This device is already online.', 'ok');
+            showConnected(res.session, res.handoff || null);
         }
     });
 

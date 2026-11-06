@@ -588,6 +588,9 @@ function gw_capture_portal_context($src)
                 }
             }
             if ($key === 'magic' && !preg_match('/^[A-Za-z0-9]{1,64}$/', $value)) {
+                gw_raw_magic_hint(strpos($value, '%%') === 0
+                    ? 'unsubstituted tag'
+                    : 'rejected, ' . strlen($value) . ' chars');
                 continue;
             }
             $context[$key] = $value;
@@ -598,6 +601,29 @@ function gw_capture_portal_context($src)
     $_SESSION['portal'] = $context;
 
     return $context;
+}
+
+/**
+ * What this request carried as 'magic', for the handoff log. Called with a
+ * note while capturing; called without one it returns the note, or says
+ * whether the field was absent - never the token itself.
+ */
+function gw_raw_magic_hint($note = null)
+{
+    static $hint = null;
+
+    if ($note !== null) {
+        $hint = $note;
+        return $hint;
+    }
+    if ($hint !== null) {
+        return $hint;
+    }
+    $input = gw_input();
+    if (!isset($_GET['magic']) && !isset($input['magic'])) {
+        return 'none';
+    }
+    return gw_field($_GET + $input, 'magic', 512) === '' ? 'empty' : 'ok';
 }
 
 function gw_portal_context()
@@ -707,8 +733,15 @@ function gw_fortigate_post_url($context)
     return $url;
 }
 
-/** Builds the instruction the browser follows after a verified OTP. */
-function gw_fortigate_handoff($mobile, $sessionToken)
+/**
+ * Builds the instruction the browser follows after a verified OTP.
+ *
+ * $tokenHash is the session's stored token_hash, so the handoff can be
+ * rebuilt for a session verified on an earlier visit (the raw token is
+ * never stored). $quiet skips the log when there is nothing to hand off -
+ * expected when re-checking an existing session on a page with no magic.
+ */
+function gw_fortigate_handoff($mobile, $tokenHash, $quiet = false)
 {
     $context = gw_portal_context();
     $landing = $context['redirect'] !== '' ? $context['redirect'] : DEFAULT_LANDING_URL;
@@ -719,18 +752,36 @@ function gw_fortigate_handoff($mobile, $sessionToken)
     }
 
     $postUrl = gw_fortigate_post_url($context);
+    if ($quiet && ($postUrl === '' || $context['magic'] === '')) {
+        return $none;
+    }
     if ($postUrl === '' || $context['magic'] === '') {
         // Most likely the portal was opened directly rather than through a
-        // firewall redirect.
-        gw_log('error.log', 'FortiGate handoff skipped: post_url or magic missing');
+        // firewall redirect. Say exactly what was missing and where the
+        // request came from, so the cause is visible from the log alone.
+        $missing = array();
+        if ($context['magic'] === '') {
+            $missing[] = 'magic';
+        }
+        if ($postUrl === '') {
+            $missing[] = 'post_url';
+        }
+        gw_log('error.log', sprintf(
+            'FortiGate handoff skipped: %s missing (post=%s, magic received=%s, origin=%s, ip=%s)',
+            implode(' and ', $missing),
+            $context['post_url'] !== '' ? $context['post_url'] : '-',
+            gw_raw_magic_hint(),
+            isset($_SERVER['HTTP_ORIGIN']) ? $_SERVER['HTTP_ORIGIN'] : '-',
+            gw_client_ip()
+        ));
         return $none;
     }
 
     if (FORTIGATE_CRED_MODE === 'mobile') {
         $username = $mobile;
-        // Deterministic from the session token, so the same value can be
+        // Deterministic from the session, so the same value can be
         // provisioned on the firewall and posted by the browser.
-        $password = substr(hash_hmac('sha256', 'fgt:' . $sessionToken, APP_SECRET), 0, 24);
+        $password = substr(hash_hmac('sha256', 'fgt:' . $tokenHash, APP_SECRET), 0, 24);
     } else {
         $username = FORTIGATE_SHARED_USER;
         $password = FORTIGATE_SHARED_PASS;
@@ -742,6 +793,11 @@ function gw_fortigate_handoff($mobile, $sessionToken)
             gw_log('error.log', 'FortiGate provisioning failed: ' . $provisioned['error']);
         }
     }
+
+    // Where the browser is about to post, to match against the FortiGate's
+    // own user-event log when a login is rejected. Never the password.
+    gw_log('handoff.log', sprintf('post to %s as %s (magic %d chars, ip %s)',
+        $postUrl, $username, strlen($context['magic']), gw_client_ip()));
 
     return array(
         'action' => 'form_post',
@@ -920,6 +976,17 @@ function gw_current_session()
     }
 
     return gw_session_active_for_device(gw_device_id());
+}
+
+/**
+ * Handoff for a device that verified on an earlier visit but whose firewall
+ * login never happened (or has lapsed). Only a form_post when this visit
+ * came through a firewall redirect with a fresh magic; null otherwise.
+ */
+function gw_session_rehandoff($row)
+{
+    $handoff = gw_fortigate_handoff((string) $row['mobile'], (string) $row['token_hash'], true);
+    return $handoff['action'] === 'form_post' ? $handoff : null;
 }
 
 function gw_session_public($row)

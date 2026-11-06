@@ -77,6 +77,9 @@ try {
                 'ssid'         => gw_portal_context()['ssid'],
                 'connected'    => $session !== null,
                 'session'      => $session ? gw_session_public($session) : null,
+                // Verified already, but the firewall may never have been told
+                // (no magic on that visit). Hand off again when we can.
+                'handoff'      => $session ? gw_session_rehandoff($session) : null,
             ));
             break;
 
@@ -85,6 +88,10 @@ try {
             $mobile = gw_normalize_mobile(gw_field($input, 'mobile', 20));
             $result = gw_otp_issue($mobile, $deviceId, $mac);
 
+            if (!$result['ok'] && $result['code'] === 'already_connected') {
+                $session = gw_current_session();
+                $result['data']['handoff'] = $session ? gw_session_rehandoff($session) : null;
+            }
             if (!$result['ok']) {
                 gw_fail($result['message'], $result['code'], $result['data']);
             }
@@ -108,8 +115,23 @@ try {
                 'authenticated' => true,
                 'token'         => $token,
                 'session'       => $result['data']['session'],
-                'handoff'       => gw_fortigate_handoff($mobile, $token),
+                'handoff'       => gw_fortigate_handoff($mobile, gw_hash_token($token)),
             ));
+            break;
+
+        /* ---------------------------------------------------------- */
+        // The page reports when the firewall served it without a token.
+        case 'diag':
+            gw_log('error.log', sprintf(
+                'Portal page has no magic: path=%s query_len=%s tag=%s form=%s origin=%s ip=%s',
+                gw_field($input, 'path', 100),
+                gw_field($input, 'query_len', 8),
+                gw_field($input, 'tag', 20),
+                gw_field($input, 'form', 10),
+                isset($_SERVER['HTTP_ORIGIN']) ? gw_field($_SERVER, 'HTTP_ORIGIN', 100) : '-',
+                gw_client_ip()
+            ));
+            gw_ok('logged');
             break;
 
         /* ---------------------------------------------------------- */
