@@ -1,7 +1,7 @@
 <?php
 /**
- * Admin dashboard: who is online, what was sent, and the approved-number
- * list. Credentials live in config.php (ADMIN_USER / ADMIN_PASS_HASH).
+ * Admin dashboard: who is online, what was sent, blocked numbers and the
+ * approved-number list. Credentials live in config.php (ADMIN_USER / ADMIN_PASS_HASH).
  *
  * While SMS_DRIVER is 'log' the SMS table shows the full message including
  * the OTP, so the whole flow can be tested without a live gateway.
@@ -29,6 +29,16 @@ $notice = '';
 function gw_pill($text, $kind)
 {
     return '<span class="pill pill-' . gw_e($kind) . '">' . gw_e($text) . '</span>';
+}
+
+function gw_block_notice($mobile, $closed)
+{
+    $notice = $mobile . ' blocked.';
+    if ($closed > 0) {
+        $notice .= ' It was online: the portal session is closed, but the firewall '
+            . 'keeps it online until its own authentication timeout.';
+    }
+    return $notice;
 }
 
 function gw_login_page($error)
@@ -111,6 +121,39 @@ if ($posted !== '' && $posted !== 'login') {
                     $notice = 'Device disconnected.';
                     break;
 
+                case 'block_add':
+                    $mobile = gw_normalize_mobile(isset($_POST['mobile']) ? $_POST['mobile'] : '');
+                    if (!gw_valid_mobile($mobile)) {
+                        $error = 'Enter a valid 10-digit mobile number.';
+                        break;
+                    }
+                    $reason = mb_substr(trim(isset($_POST['reason']) ? $_POST['reason'] : ''), 0, 255);
+                    if ($reason === '') {
+                        $error = 'Enter a description for the block.';
+                        break;
+                    }
+                    $notice = gw_block_notice($mobile, gw_mobile_block($mobile, $reason));
+                    break;
+
+                case 'block_remove':
+                    gw_mobile_unblock(isset($_POST['id']) ? $_POST['id'] : 0);
+                    $notice = 'Number unblocked.';
+                    break;
+
+                case 'block_again':
+                    $row = gw_block_entry(isset($_POST['id']) ? $_POST['id'] : 0);
+                    if (!$row) {
+                        $error = 'That entry no longer exists.';
+                        break;
+                    }
+                    $notice = gw_block_notice($row['mobile'], gw_mobile_block($row['mobile'], $row['reason']));
+                    break;
+
+                case 'block_delete':
+                    gw_block_delete(isset($_POST['id']) ? $_POST['id'] : 0);
+                    $notice = 'Entry deleted. The number can request an OTP again.';
+                    break;
+
                 case 'allow_add':
                     $mobile = gw_normalize_mobile(isset($_POST['mobile']) ? $_POST['mobile'] : '');
                     if (!gw_valid_mobile($mobile)) {
@@ -152,6 +195,7 @@ $otps = array();
 $history = array();
 $sms = array();
 $allowed = array();
+$blocked = array();
 $loginsToday = 0;
 $otpToday = 0;
 $failedToday = 0;
@@ -178,6 +222,7 @@ try {
     $history = db()->query('SELECT * FROM login_history ORDER BY id DESC LIMIT 25')->fetchAll();
     $sms     = db()->query('SELECT * FROM sms_log ORDER BY id DESC LIMIT 20')->fetchAll();
     $allowed = db()->query('SELECT * FROM allowed_mobiles ORDER BY mobile')->fetchAll();
+    $blocked = db()->query('SELECT * FROM blocked_mobiles ORDER BY active DESC, blocked_at DESC LIMIT 200')->fetchAll();
 
 } catch (Exception $e) {
     $error = 'Database not ready. Run install.php first. (' . $e->getMessage() . ')';
@@ -216,12 +261,13 @@ try {
     <div class="tbl">
         <h2>Connected devices</h2>
         <table>
-            <thead><tr><th>Mobile</th><th>Device</th><th>IP</th><th>Started</th><th>Expires</th><th></th></tr></thead>
+            <thead><tr><th>Mobile</th><th>MRD No</th><th>Device</th><th>IP</th><th>Started</th><th>Expires</th><th></th></tr></thead>
             <tbody>
-            <?php if (!$active): ?><tr><td colspan="6" class="muted">Nobody is connected right now.</td></tr><?php endif; ?>
+            <?php if (!$active): ?><tr><td colspan="7" class="muted">Nobody is connected right now.</td></tr><?php endif; ?>
             <?php foreach ($active as $row): ?>
                 <tr>
                     <td><?php echo gw_e($row['mobile']); ?></td>
+                    <td><?php echo gw_e($row['mrd_no']); ?></td>
                     <td><code><?php echo gw_e($row['mac_address'] ? $row['mac_address'] : $row['device_id']); ?></code></td>
                     <td><?php echo gw_e($row['ip_address']); ?></td>
                     <td><?php echo gw_e($row['started_at']); ?></td>
@@ -241,15 +287,58 @@ try {
     </div>
 
     <div class="tbl">
+        <h2>Blocked numbers</h2>
+
+        <form method="post" class="form">
+            <input type="hidden" name="csrf" value="<?php echo gw_e($csrf); ?>">
+            <input type="hidden" name="do" value="block_add">
+            <input name="mobile" type="tel" inputmode="numeric" maxlength="10" placeholder="10-digit mobile" required>
+            <input name="reason" type="text" maxlength="255" placeholder="Description (why it is blocked)" style="flex:1;min-width:240px" required>
+            <button class="btn" type="submit">Block</button>
+        </form>
+
+        <table>
+            <thead><tr><th>Mobile</th><th>Description</th><th>Status</th><th>Blocked</th><th>Unblocked</th><th></th></tr></thead>
+            <tbody>
+            <?php if (!$blocked): ?><tr><td colspan="6" class="muted">No numbers have been blocked.</td></tr><?php endif; ?>
+            <?php foreach ($blocked as $row): ?>
+                <tr>
+                    <td><?php echo gw_e($row['mobile']); ?></td>
+                    <td style="white-space:normal;max-width:430px"><?php echo gw_e($row['reason']); ?></td>
+                    <td><?php echo ((int) $row['active'] === 1) ? gw_pill('blocked', 'error') : gw_pill('unblocked', 'off'); ?></td>
+                    <td><?php echo gw_e($row['blocked_at']); ?></td>
+                    <td><?php echo gw_e($row['unblocked_at']); ?></td>
+                    <td>
+                        <form method="post" style="margin:0;display:inline">
+                            <input type="hidden" name="csrf" value="<?php echo gw_e($csrf); ?>">
+                            <input type="hidden" name="do" value="<?php echo ((int) $row['active'] === 1) ? 'block_remove' : 'block_again'; ?>">
+                            <input type="hidden" name="id" value="<?php echo (int) $row['id']; ?>">
+                            <button class="btn-link" type="submit"><?php echo ((int) $row['active'] === 1) ? 'Unblock' : 'Block again'; ?></button>
+                        </form>
+                        <form method="post" style="margin:0;display:inline" onsubmit="return confirm('Delete this entry and its description? The number will be able to request an OTP.');">
+                            <input type="hidden" name="csrf" value="<?php echo gw_e($csrf); ?>">
+                            <input type="hidden" name="do" value="block_delete">
+                            <input type="hidden" name="id" value="<?php echo (int) $row['id']; ?>">
+                            <button class="btn-link" type="submit">Delete</button>
+                        </form>
+                    </td>
+                </tr>
+            <?php endforeach; ?>
+            </tbody>
+        </table>
+    </div>
+
+    <div class="tbl">
         <h2>Recent OTP requests</h2>
         <table>
-            <thead><tr><th>Time</th><th>Mobile</th><th>Device</th><th>Status</th><th>Tries</th><th>Expires</th></tr></thead>
+            <thead><tr><th>Time</th><th>Mobile</th><th>MRD No</th><th>Device</th><th>Status</th><th>Tries</th><th>Expires</th></tr></thead>
             <tbody>
-            <?php if (!$otps): ?><tr><td colspan="6" class="muted">No OTP requests yet.</td></tr><?php endif; ?>
+            <?php if (!$otps): ?><tr><td colspan="7" class="muted">No OTP requests yet.</td></tr><?php endif; ?>
             <?php foreach ($otps as $row): ?>
                 <tr>
                     <td><?php echo gw_e($row['created_at']); ?></td>
                     <td><?php echo gw_e($row['mobile']); ?></td>
+                    <td><?php echo gw_e($row['mrd_no']); ?></td>
                     <td><code><?php echo gw_e(mb_substr((string) $row['device_id'], 0, 24)); ?></code></td>
                     <td><?php
                         $status = (string) $row['status'];
@@ -257,6 +346,7 @@ try {
                             case 'verified':    $kind = 'ok'; break;
                             case 'pending':     $kind = 'warn'; break;
                             case 'locked':
+                            case 'blocked':
                             case 'send_failed': $kind = 'error'; break;
                             default:            $kind = 'off';
                         }

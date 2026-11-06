@@ -74,5 +74,23 @@ See README.md for setup; this file records the non-obvious parts.
   uses `GW_PORTAL_SERVER`, built from `location.protocol`, because an https page cannot
   call an http API. Cookies are `SameSite=None; Secure` only over HTTPS (`gw_samesite()`).
 
+## MRD and blocked numbers
+- `mrd_no` lives on `otp_requests` and `guest_sessions`. It is format-checked only
+  (`gw_valid_mrd`, 5-7 digits) until the hospital-records lookup exists; add that in
+  `gw_otp_issue()` after the format check, so a bad MRD costs no SMS.
+- `blocked_mobiles` has one row per number (`mobile` is UNIQUE). Unblock sets `active = 0`
+  and keeps the row and description; Block again and the Block form reuse that row through
+  `gw_mobile_block()`, so a repeat block also burns pending OTPs and closes sessions.
+  Delete removes the row, which frees a number that was still blocked.
+- A block is enforced in `gw_otp_issue()` and rechecked in `gw_otp_verify()`. The guest
+  sees a fixed message, never the description. Guest-facing MRD text does not state the
+  5-7 digit rule (`MRD No` label, `MRD NO` placeholder, "Enter a valid MRD number.").
+- New columns must also go in the `ALTER` loop in `gw_install_schema()`: `CREATE TABLE
+  IF NOT EXISTS` will not touch existing tables. Run `php install.php` before saving
+  code that needs them, because this checkout is the live server.
+- `gw_session_end()` only updates the portal DB. It does not log a device off the
+  FortiGate, so Disconnect and block reach a device already online only at the
+  firewall's auth timeout.
+
 ## Conventions
 - Files use CRLF line endings; keep them (sed -i on Git Bash converts to LF).

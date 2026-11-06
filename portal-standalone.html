@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<!-- Guest Wi-Fi portal page v1.8 (2026-10-06). Bump the version in the footer too. -->
+<!-- Guest Wi-Fi portal page v1.11 (2026-11-06). Bump the version in the footer too. -->
 <html lang="en">
 <head>
 <meta charset="utf-8">
@@ -220,6 +220,13 @@ font-size:.88rem;border-bottom:1px solid var(--border)}
                                    maxlength="10" placeholder="10-digit number" required>
                         </div>
                     </div>
+                    <div class="field">
+                        <label for="mrd">MRD No</label>
+                        <div class="input-group">
+                            <input id="mrd" type="text" inputmode="numeric" autocomplete="off"
+                                   maxlength="7" placeholder="MRD NO" required>
+                        </div>
+                    </div>
                     <button class="btn" type="submit" id="btn-send">
                         <span class="spinner" aria-hidden="true"></span>
                         <span>Send OTP</span>
@@ -227,7 +234,7 @@ font-size:.88rem;border-bottom:1px solid var(--border)}
                 </form>
 
                 <p class="muted center" style="margin-top:16px">
-                    One OTP connects one device. Your number is used only to authorise this session.
+                    One OTP connects one device. Your details are used only to authorise this session.
                 </p>
             </section>
 
@@ -285,7 +292,7 @@ font-size:.88rem;border-bottom:1px solid var(--border)}
         <footer class="card-footer">
             Powered by Sankara Nethralaya &middot; Chennai<br>
             Need help? Contact the reception desk.<br>
-            <span id="page-ver">Page v1.8 &middot; 2026-10-06</span>
+            <span id="page-ver">Page v1.11 &middot; 2026-11-06</span>
         </footer>
     </section>
 </main>
@@ -347,11 +354,15 @@ font-size:.88rem;border-bottom:1px solid var(--border)}
         return s.length === 10 && digits(s) === s && '6789'.indexOf(s.charAt(0)) !== -1;
     }
 
+    function isMrd(s) {
+        return s.length >= 5 && s.length <= 7 && digits(s) === s;
+    }
+
     var ui = {
         alert: el('alert'), ssidLine: el('ssid-line'),
         agree: el('agree'), btnAgree: el('btn-agree'),
         formMobile: el('form-mobile'), formOtp: el('form-otp'),
-        mobile: el('mobile'), otp: el('otp'),
+        mobile: el('mobile'), mrd: el('mrd'), otp: el('otp'),
         btnSend: el('btn-send'), btnVerify: el('btn-verify'), btnResend: el('btn-resend'),
         btnChange: el('btn-change'), btnLogout: el('btn-logout'), btnContinue: el('btn-continue'),
         masked: el('masked-mobile'), otpExpiry: el('otp-expiry'), accessNote: el('access-note'),
@@ -603,11 +614,19 @@ font-size:.88rem;border-bottom:1px solid var(--border)}
             return;
         }
 
+        var mrd = digits(ui.mrd.value);
+
+        if (!isMrd(mrd)) {
+            setAlert('Enter a valid MRD number.', 'error');
+            ui.mrd.focus();
+            return;
+        }
+
         var btn = resend ? ui.btnResend : ui.btnSend;
         setBusy(btn, true);
         setAlert('');
 
-        api('send_otp', { mobile: mobile }).then(function (res) {
+        api('send_otp', { mobile: mobile, mrd: mrd }).then(function (res) {
             setBusy(btn, false);
 
             if (res.success) {
@@ -689,6 +708,10 @@ font-size:.88rem;border-bottom:1px solid var(--border)}
         this.value = digits(this.value).slice(0, 10);
     });
 
+    ui.mrd.addEventListener('input', function () {
+        this.value = digits(this.value).slice(0, 7);
+    });
+
     ui.otp.addEventListener('input', function () {
         this.value = digits(this.value).slice(0, state.otpLength);
         if (this.value.length === state.otpLength && !state.busy) { verifyOtp(); }
@@ -714,6 +737,7 @@ font-size:.88rem;border-bottom:1px solid var(--border)}
             setBusy(ui.btnLogout, false);
             state.sessionLeft = 0;
             ui.mobile.value = '';
+            ui.mrd.value = '';
             ui.otp.value = '';
             ui.agree.checked = false;
             showStep('terms');

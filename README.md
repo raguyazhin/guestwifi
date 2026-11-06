@@ -82,10 +82,32 @@ All in `config.php`.
 | Successful logins per number per day | `MAX_DAILY_SUCCESS` | 3 |
 | Length of internet access | `SESSION_MINUTES` | 120 |
 | Restrict to a pre-approved list | `REQUIRE_ALLOWED_LIST` | `false` |
+| MRD number required to request an OTP | fixed, `gw_valid_mrd()` | 5 to 7 digits |
+| Refuse specific numbers | **Blocked numbers** in the dashboard | none |
 
 `REQUIRE_ALLOWED_LIST` is `false`, i.e. an open guest portal. Set it to `true`
 and manage numbers under **Approved numbers** in the dashboard to make it
 staff-only.
+
+### MRD number
+
+Every OTP request needs an MRD number of 5 to 7 digits. It is stored with the
+mobile and MAC on `otp_requests` and `guest_sessions`, and shown in the dashboard.
+Only the format is checked for now; any well-formed number is accepted. When the
+hospital records can be queried, add the lookup in `gw_otp_issue()` right after
+the `gw_valid_mrd()` check, so a bad MRD is refused before any SMS is spent.
+
+### Blocked numbers
+
+Blocking a number under **Blocked numbers** in the dashboard needs a description.
+It refuses new OTPs, cancels any pending OTP and closes the portal session.
+Unblock keeps the entry and its description on record, and **Block again** reapplies
+it with the same description. **Delete** removes the entry for good, and a number
+that was still blocked can then request OTPs. A block overrides the approved list.
+
+A guest already online stays online at the firewall until the FortiGate's own
+authentication timeout, because the portal has no firewall API access to log them
+off. Dashboard **Disconnect** has the same limit.
 
 ### How "one OTP, one device" is enforced
 

@@ -249,6 +249,16 @@ function gw_valid_mobile($mobile)
     return (bool) preg_match(MOBILE_REGEX, $mobile);
 }
 
+/**
+ * MRD number: digits only, 5 to 7 of them. Kept as text so leading zeros
+ * survive. Format only for now; it is not yet checked against the hospital
+ * records, so any well-formed number is accepted.
+ */
+function gw_valid_mrd($mrd)
+{
+    return (bool) preg_match('/^[0-9]{5,7}\z/', $mrd);
+}
+
 /** 9876543210 -> 98XXXXXX10, for echoing a number back on screen. */
 function gw_mask_mobile($mobile)
 {
@@ -390,6 +400,16 @@ function gw_table_exists(PDO $pdo, $table)
     return (int) $stmt->fetchColumn() > 0;
 }
 
+function gw_column_exists(PDO $pdo, $table, $column)
+{
+    $stmt = $pdo->prepare(
+        'SELECT COUNT(*) FROM information_schema.COLUMNS
+          WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ? AND COLUMN_NAME = ?'
+    );
+    $stmt->execute(array(DB_NAME, $table, $column));
+    return (int) $stmt->fetchColumn() > 0;
+}
+
 /**
  * Creates the database and tables if absent. Safe to run repeatedly.
  * Returns a list of what happened, for install.php to display.
@@ -418,12 +438,25 @@ function gw_install_schema()
                 created_at DATETIME NOT NULL
             ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4",
 
+        // Numbers refused at the portal. A row is kept after unblocking so
+        // the reason stays on record; blocking again reuses it.
+        'blocked_mobiles' => "
+            CREATE TABLE IF NOT EXISTS blocked_mobiles (
+                id           INT AUTO_INCREMENT PRIMARY KEY,
+                mobile       VARCHAR(20) NOT NULL UNIQUE,
+                reason       VARCHAR(255) NOT NULL,
+                active       TINYINT(1) NOT NULL DEFAULT 1,
+                blocked_at   DATETIME NOT NULL,
+                unblocked_at DATETIME DEFAULT NULL
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4",
+
         // device_id is the device the code was issued to - what makes the
         // OTP unusable anywhere else. `used` is the single-use latch.
         'otp_requests' => "
             CREATE TABLE IF NOT EXISTS otp_requests (
                 id          BIGINT AUTO_INCREMENT PRIMARY KEY,
                 mobile      VARCHAR(20) NOT NULL,
+                mrd_no      VARCHAR(7) DEFAULT NULL,
                 otp_hash    VARCHAR(255) NOT NULL,
                 device_id   VARCHAR(128) NOT NULL,
                 mac_address VARCHAR(32) DEFAULT NULL,
@@ -444,6 +477,7 @@ function gw_install_schema()
             CREATE TABLE IF NOT EXISTS guest_sessions (
                 id          BIGINT AUTO_INCREMENT PRIMARY KEY,
                 mobile      VARCHAR(20) NOT NULL,
+                mrd_no      VARCHAR(7) DEFAULT NULL,
                 device_id   VARCHAR(128) NOT NULL,
                 mac_address VARCHAR(32) DEFAULT NULL,
                 ip_address  VARCHAR(45) DEFAULT NULL,
@@ -493,6 +527,14 @@ function gw_install_schema()
         $existed = gw_table_exists($pdo, $name);
         $pdo->exec($sql);
         $done[] = $existed ? "table `$name` present" : "table `$name` created";
+    }
+
+    // Columns added after the first release, for databases that predate them.
+    foreach (array('otp_requests', 'guest_sessions') as $name) {
+        if (!gw_column_exists($pdo, $name, 'mrd_no')) {
+            $pdo->exec("ALTER TABLE $name ADD COLUMN mrd_no VARCHAR(7) DEFAULT NULL AFTER mobile");
+            $done[] = "column `$name.mrd_no` added";
+        }
     }
 
     return $done;
@@ -931,7 +973,7 @@ function gw_history_add($mobile, $deviceId, $success, $reason)
  * Opens a session for a device, replacing any earlier session that device
  * still holds (a reconnect is not a second device).
  */
-function gw_session_create($mobile, $deviceId, $mac, $otpId)
+function gw_session_create($mobile, $mrd, $deviceId, $mac, $otpId)
 {
     $pdo   = db();
     $token = gw_random_token(32);
@@ -946,11 +988,11 @@ function gw_session_create($mobile, $deviceId, $mac, $otpId)
 
     $stmt = $pdo->prepare(
         'INSERT INTO guest_sessions
-            (mobile, device_id, mac_address, ip_address, user_agent, otp_id,
+            (mobile, mrd_no, device_id, mac_address, ip_address, user_agent, otp_id,
              token_hash, active, started_at, expires_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?)'
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)'
     );
-    $stmt->execute(array($mobile, mb_substr($deviceId, 0, 128), $mac, gw_client_ip(),
+    $stmt->execute(array($mobile, $mrd, mb_substr($deviceId, 0, 128), $mac, gw_client_ip(),
         gw_user_agent(), $otpId, gw_hash_token($token), $now, $until));
 
     $stmt = $pdo->prepare('SELECT * FROM guest_sessions WHERE id = ?');
@@ -1236,10 +1278,76 @@ function gw_mobile_allowed($mobile)
     return (bool) $stmt->fetchColumn();
 }
 
-function gw_otp_issue($mobile, $deviceId, $mac)
+function gw_mobile_blocked($mobile)
+{
+    $stmt = db()->prepare('SELECT 1 FROM blocked_mobiles WHERE mobile = ? AND active = 1');
+    $stmt->execute(array($mobile));
+
+    return (bool) $stmt->fetchColumn();
+}
+
+/**
+ * Blocks a number and takes back what it already holds: its pending OTP and
+ * its portal sessions. Returns how many sessions were closed.
+ */
+function gw_mobile_block($mobile, $reason)
+{
+    $pdo  = db();
+    $stmt = $pdo->prepare(
+        'INSERT INTO blocked_mobiles (mobile, reason, active, blocked_at)
+         VALUES (?, ?, 1, ?)
+         ON DUPLICATE KEY UPDATE reason = VALUES(reason), active = 1,
+             blocked_at = VALUES(blocked_at), unblocked_at = NULL'
+    );
+    $stmt->execute(array($mobile, $reason, gw_ts()));
+
+    $stmt = $pdo->prepare("UPDATE otp_requests SET used = 1, status = 'blocked' WHERE mobile = ? AND used = 0");
+    $stmt->execute(array($mobile));
+
+    $sessions = gw_sessions_active_for_mobile($mobile);
+    foreach ($sessions as $row) {
+        gw_session_end((int) $row['id'], 'blocked');
+    }
+
+    return count($sessions);
+}
+
+function gw_mobile_unblock($id)
+{
+    $stmt = db()->prepare('UPDATE blocked_mobiles SET active = 0, unblocked_at = ? WHERE id = ? AND active = 1');
+    $stmt->execute(array(gw_ts(), (int) $id));
+}
+
+function gw_block_entry($id)
+{
+    $stmt = db()->prepare('SELECT * FROM blocked_mobiles WHERE id = ?');
+    $stmt->execute(array((int) $id));
+    $row = $stmt->fetch();
+
+    return $row ? $row : null;
+}
+
+/** Removes the entry and its description. A blocked number is free again. */
+function gw_block_delete($id)
+{
+    $stmt = db()->prepare('DELETE FROM blocked_mobiles WHERE id = ?');
+    $stmt->execute(array((int) $id));
+}
+
+function gw_otp_issue($mobile, $mrd, $deviceId, $mac)
 {
     if (!gw_valid_mobile($mobile)) {
         return gw_result(false, 'invalid_mobile', 'Enter a valid 10-digit mobile number.');
+    }
+
+    if (!gw_valid_mrd($mrd)) {
+        return gw_result(false, 'invalid_mrd', 'Enter a valid MRD number.');
+    }
+
+    if (gw_mobile_blocked($mobile)) {
+        gw_history_add($mobile, $deviceId, false, 'blocked');
+        return gw_result(false, 'blocked',
+            'This mobile number is blocked from Wi-Fi access. Please contact the reception desk.');
     }
 
     if (!gw_mobile_allowed($mobile)) {
@@ -1309,11 +1417,11 @@ function gw_otp_issue($mobile, $deviceId, $mac)
 
     $stmt = $pdo->prepare(
         'INSERT INTO otp_requests
-            (mobile, otp_hash, device_id, mac_address, ip_address, user_agent,
+            (mobile, mrd_no, otp_hash, device_id, mac_address, ip_address, user_agent,
              attempts, used, status, expires_at, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, 0, 0, ?, ?, ?)'
+         VALUES (?, ?, ?, ?, ?, ?, ?, 0, 0, ?, ?, ?)'
     );
-    $stmt->execute(array($mobile, password_hash($otp, PASSWORD_DEFAULT),
+    $stmt->execute(array($mobile, $mrd, password_hash($otp, PASSWORD_DEFAULT),
         mb_substr($deviceId, 0, 128), $mac, gw_client_ip(), gw_user_agent(),
         'pending', gw_ts('+' . OTP_VALID_MINUTES . ' minutes'), gw_ts()));
 
@@ -1414,6 +1522,12 @@ function gw_otp_verify($mobile, $otp, $deviceId)
 
     // Re-check the limits that may have been reached while this OTP was in
     // flight (e.g. the same number logged in elsewhere 30 seconds ago).
+    if (gw_mobile_blocked($mobile)) {
+        gw_history_add($mobile, $deviceId, false, 'blocked');
+        return gw_result(false, 'blocked',
+            'This mobile number is blocked from Wi-Fi access. Please contact the reception desk.');
+    }
+
     if (gw_daily_success_count($mobile) >= MAX_DAILY_SUCCESS) {
         gw_history_add($mobile, $deviceId, false, 'daily_limit');
         return gw_result(false, 'daily_limit', 'Daily login limit reached for this number.');
@@ -1445,7 +1559,7 @@ function gw_otp_verify($mobile, $otp, $deviceId)
     }
 
     $mac     = $row['mac_address'] ? $row['mac_address'] : null;
-    $created = gw_session_create($mobile, $deviceId, $mac, (int) $row['id']);
+    $created = gw_session_create($mobile, $row['mrd_no'], $deviceId, $mac, (int) $row['id']);
     gw_history_add($mobile, $deviceId, true, 'login_ok');
 
     return gw_result(true, 'verified', 'Verified. You are now connected.', array(

@@ -3,7 +3,7 @@
  * Portal API.
  *
  *   POST api.php?action=init        capture the firewall's redirect params
- *   POST api.php?action=send_otp    { mobile }
+ *   POST api.php?action=send_otp    { mobile, mrd }
  *   POST api.php?action=verify_otp  { mobile, otp }
  *   GET  api.php?action=status
  *   POST api.php?action=logout
@@ -86,7 +86,8 @@ try {
         /* ---------------------------------------------------------- */
         case 'send_otp':
             $mobile = gw_normalize_mobile(gw_field($input, 'mobile', 20));
-            $result = gw_otp_issue($mobile, $deviceId, $mac);
+            $mrd    = gw_field($input, 'mrd', 20);
+            $result = gw_otp_issue($mobile, $mrd, $deviceId, $mac);
 
             if (!$result['ok'] && $result['code'] === 'already_connected') {
                 $session = gw_current_session();
